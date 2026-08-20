@@ -22,7 +22,6 @@ dev = [
 
 [project.scripts]
 vl = "cli:main"
-vl-server = "main:run"
 
 [build-system]
 requires = ["hatchling"]

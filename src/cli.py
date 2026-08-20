@@ -23,9 +23,7 @@ from litellm_registry import register_litellm_model_metadata
 from model_store import write_default_model
 from settings import get_settings
 
-GITHUB_REPOSITORY = "LittleGraper/vela-llm"
-GITHUB_INSTALL_URL = f"git+https://github.com/{GITHUB_REPOSITORY}.git"
-GITHUB_LATEST_RELEASE_URL = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
+PYPI_PACKAGE = "vela-llm"
 MODEL_TEST_PROGRESS_INTERVAL = 0.1
 MODEL_TEST_SPINNER_FRAMES = ("-", "\\", "|", "/")
 MODEL_TEST_STATUS_WIDTH = 6
@@ -38,6 +36,12 @@ class ModelTestResult:
     entry: dict[str, str]
     ping_ms: float
     error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class PidRecord:
+    pid: int
+    start_token: str | None
 
 
 class ModelTestProgress:
@@ -190,7 +194,6 @@ def grouped_subparser_choices(
 
 
 def main(argv: list[str] | None = None) -> None:
-    ensure_config_files()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -200,6 +203,8 @@ def main(argv: list[str] | None = None) -> None:
             return
 
         command = args.command or "help"
+        if command in {"api", "start", "model", "models", "test"}:
+            ensure_config_files()
         if command == "help":
             parser.print_help()
         elif command == "version":
@@ -215,11 +220,11 @@ def main(argv: list[str] | None = None) -> None:
         elif command == "whoami":
             whoami()
         elif command == "api":
-            api()
+            api(show_key=args.show_key)
         elif command in {"model", "models"}:
             handle_models(args)
         elif command == "update":
-            update(args)
+            update()
         elif command == "test":
             test_models(args)
     except KeyboardInterrupt as exc:
@@ -229,7 +234,7 @@ def main(argv: list[str] | None = None) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Local GitHub Copilot proxy.",
+        description="vela-llm provides local access to GitHub Copilot models.",
         formatter_class=VlHelpFormatter,
         usage="%(prog)s [-h] [-v] [command] ...",
     )
@@ -241,10 +246,15 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("login", help="Authenticate GitHub Copilot with device flow.")
     subparsers.add_parser("logout", help="Remove saved GitHub Copilot OAuth credentials.")
     subparsers.add_parser("whoami", help="Show the current GitHub Copilot account.")
-    subparsers.add_parser("api", help="Show OpenAI and Anthropic API settings.")
+    api_parser = subparsers.add_parser("api", help="Show OpenAI and Anthropic API settings.")
+    api_parser.add_argument(
+        "--show-key",
+        action="store_true",
+        help="Show the complete local API key instead of masking it.",
+    )
     subparsers.add_parser("stop", help="Stop the running proxy instance.")
     subparsers.add_parser("quit", help="Stop the running proxy instance.")
-    subparsers.add_parser("update", help="Update vl from GitHub using uv tool install.")
+    subparsers.add_parser("update", help="Update vl to the latest stable PyPI release.")
 
     test_parser = subparsers.add_parser("test", help="Test connectivity for configured models.")
     test_parser.add_argument(
@@ -260,7 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     test_parser.add_argument(
         "--timeout",
-        type=float,
+        type=positive_float,
         default=60.0,
         help="Per-model test timeout in seconds. Default: 60.",
     )
@@ -286,6 +296,13 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.add_parser(name, help="Interactively change the default model.")
 
     return parser
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
 
 
 def start(args: argparse.Namespace) -> None:
@@ -319,15 +336,9 @@ def start(args: argparse.Namespace) -> None:
     print(f"Log file:           {log_file}", flush=True)
 
 
-def update(args: argparse.Namespace) -> None:
-    try:
-        release_tag = latest_release_tag()
-    except RuntimeError as exc:
-        print(str(exc), flush=True)
-        raise SystemExit(1) from exc
-    install_url = release_install_url(release_tag)
-    command = ["uv", "tool", "install", "--force", install_url]
-    print(f"Updating vl to {release_tag} from GitHub Releases...", flush=True)
+def update() -> None:
+    command = ["uv", "tool", "install", "--force", PYPI_PACKAGE]
+    print("Updating vela-llm to the latest stable PyPI release...", flush=True)
     print(" ".join(command), flush=True)
     if should_print_manual_update_command():
         print(
@@ -350,35 +361,6 @@ def should_print_manual_update_command() -> bool:
 def is_running_from_uv_tool() -> bool:
     parts = {part.casefold() for part in Path(sys.prefix).parts}
     return {"uv", "tools", "vela-llm"}.issubset(parts)
-
-
-def latest_release_tag() -> str:
-    try:
-        response = httpx.get(
-            GITHUB_LATEST_RELEASE_URL,
-            headers={"accept": "application/vnd.github+json"},
-            timeout=30,
-        )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code == 404:
-            msg = (
-                f"No GitHub release was found for {GITHUB_REPOSITORY}. "
-                "Create release v0.1.0 first, then run `vl update` again."
-            )
-            raise RuntimeError(msg) from exc
-        raise RuntimeError(f"Unable to read latest GitHub release: {short_error(exc)}") from exc
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"Unable to read latest GitHub release: {short_error(exc)}") from exc
-    data = response.json()
-    tag = data.get("tag_name") if isinstance(data, dict) else None
-    if not isinstance(tag, str) or not tag.strip():
-        raise RuntimeError("GitHub latest release response did not include tag_name.")
-    return tag.strip()
-
-
-def release_install_url(tag: str) -> str:
-    return f"{GITHUB_INSTALL_URL}@{tag}"
 
 
 def login() -> None:
@@ -423,12 +405,12 @@ def whoami() -> None:
         raise RuntimeError("GitHub user response did not include login or id.")
 
 
-def api() -> None:
+def api(*, show_key: bool = False) -> None:
     settings = get_settings()
     if not settings.local_api_key:
         msg = "LOCAL_API_KEY is required. Copy .env.example to .env and set a local key."
         raise RuntimeError(msg)
-    print_api_info(settings)
+    print_api_info(settings, show_key=show_key)
 
 
 def test_models(args: argparse.Namespace) -> None:
@@ -622,7 +604,7 @@ def stop() -> None:
     pid_file = active_config_dir() / ".vela-llm.pid"
     pid = read_pid_file(pid_file)
     if pid is None:
-        print("No running Copilot Proxy instance was recorded.")
+        print("No running vela-llm instance was recorded.")
         return
     stop_existing_instance(pid_file)
 
@@ -844,23 +826,33 @@ def has_valid_api_key(authenticator) -> bool:
 
 
 def stop_existing_instance(pid_file: Path) -> bool:
-    pid = read_pid_file(pid_file)
-    if pid is None:
+    record = read_pid_record(pid_file)
+    if record is None:
         return False
+    pid = record.pid
     if not is_process_running(pid):
         cleanup_pid_file(pid_file)
         return False
 
-    print(f"Stopping previous Copilot Proxy instance (pid {pid})...", flush=True)
+    current_start_token = process_start_token(pid)
+    if record.start_token is None or current_start_token != record.start_token:
+        cleanup_pid_file(pid_file)
+        print(
+            f"Ignored stale vela-llm PID record for pid {pid}; no process was stopped.",
+            flush=True,
+        )
+        return False
+
+    print(f"Stopping previous vela-llm instance (pid {pid})...", flush=True)
     terminate_process(pid)
     for _ in range(50):
         if not is_process_running(pid):
             cleanup_pid_file(pid_file)
-            print("Previous Copilot Proxy instance stopped.", flush=True)
+            print("Previous vela-llm instance stopped.", flush=True)
             return True
         time.sleep(0.1)
 
-    msg = f"Previous Copilot Proxy instance (pid {pid}) did not stop in time."
+    msg = f"Previous vela-llm instance (pid {pid}) did not stop in time."
     raise RuntimeError(msg)
 
 
@@ -872,15 +864,87 @@ def wait_for_port_available(host: str, port: int) -> None:
 
 
 def read_pid_file(pid_file: Path) -> int | None:
+    record = read_pid_record(pid_file)
+    return record.pid if record is not None else None
+
+
+def read_pid_record(pid_file: Path) -> PidRecord | None:
     try:
-        return int(pid_file.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+        data = json.loads(pid_file.read_text(encoding="utf-8").strip())
+        if isinstance(data, int):
+            return PidRecord(pid=data, start_token=None)
+        if not isinstance(data, dict):
+            return None
+        pid = data.get("pid")
+        start_token = data.get("start_token")
+        if not isinstance(pid, int) or (
+            start_token is not None and not isinstance(start_token, str)
+        ):
+            return None
+        return PidRecord(pid=pid, start_token=start_token)
+    except (OSError, json.JSONDecodeError):
         return None
 
 
 def write_pid_file(pid_file: Path, pid: int) -> None:
     pid_file.parent.mkdir(parents=True, exist_ok=True)
-    pid_file.write_text(str(pid), encoding="utf-8")
+    record = {"pid": pid, "start_token": process_start_token(pid)}
+    pid_file.write_text(json.dumps(record, separators=(",", ":")), encoding="utf-8")
+
+
+def process_start_token(pid: int) -> str | None:
+    if pid <= 0:
+        return None
+    if sys.platform == "win32":
+        return windows_process_start_token(pid)
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
+    except OSError:
+        return None
+    return fields[21] if len(fields) > 21 else None
+
+
+def windows_process_start_token(pid: int) -> str | None:
+    import ctypes
+    from ctypes import wintypes
+
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    get_process_times = kernel32.GetProcessTimes
+    get_process_times.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    get_process_times.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+
+    process = open_process(process_query_limited_information, False, pid)
+    if not process:
+        return None
+    try:
+        created = wintypes.FILETIME()
+        exited = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        if not get_process_times(
+            process,
+            ctypes.byref(created),
+            ctypes.byref(exited),
+            ctypes.byref(kernel),
+            ctypes.byref(user),
+        ):
+            return None
+        return str((created.dwHighDateTime << 32) | created.dwLowDateTime)
+    finally:
+        close_handle(process)
 
 
 def cleanup_pid_file(pid_file: Path) -> None:
@@ -947,7 +1011,7 @@ def ensure_port_available(host: str, port: int) -> None:
     if is_port_available(host, port):
         return
     msg = (
-        f"Port {port} on {host} is already in use, but no restartable Copilot Proxy "
+        f"Port {port} on {host} is already in use, but no restartable vela-llm "
         "instance was found. Stop the process using that port or change VELA_LLM_PORT."
     )
     raise RuntimeError(msg)
@@ -967,24 +1031,31 @@ def print_startup_info(settings) -> None:
     root_base_url, openai_base_url = local_api_urls(settings)
 
     print("", flush=True)
-    print("Copilot Proxy is starting...", flush=True)
+    print("vela-llm is starting...", flush=True)
     print(f"OpenAI Base URL:    {openai_base_url}", flush=True)
     print(f"Anthropic Base URL: {root_base_url}", flush=True)
-    print(f"API Key:            {settings.local_api_key}", flush=True)
+    print(f"API Key:            {mask_api_key(settings.local_api_key)}", flush=True)
     print(f"Default model:      {settings.default_model}", flush=True)
     print("", flush=True)
 
 
-def print_api_info(settings) -> None:
+def print_api_info(settings, *, show_key: bool = False) -> None:
     root_base_url, openai_base_url = local_api_urls(settings)
+    api_key = settings.local_api_key if show_key else mask_api_key(settings.local_api_key)
 
     print("OpenAI Compatible:", flush=True)
-    print(f"API Key:  {settings.local_api_key}", flush=True)
+    print(f"API Key:  {api_key}", flush=True)
     print(f"Base URL: {openai_base_url}", flush=True)
     print("", flush=True)
     print("Anthropic Compatible:", flush=True)
-    print(f"API Key:  {settings.local_api_key}", flush=True)
+    print(f"API Key:  {api_key}", flush=True)
     print(f"Base URL: {root_base_url}", flush=True)
+
+
+def mask_api_key(api_key: str) -> str:
+    if len(api_key) <= 8:
+        return "*" * len(api_key)
+    return f"{api_key[:3]}...{api_key[-4:]}"
 
 
 def local_api_urls(settings) -> tuple[str, str]:

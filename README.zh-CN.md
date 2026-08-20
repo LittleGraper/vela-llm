@@ -22,6 +22,9 @@ vl login
 # 启动本地代理
 vl start
 
-# 查看 API Key 和 Base URL
-vl api
+# 查看 API Key 和 Base URL（默认隐藏完整密钥）
+vl api --show-key
+
+# 更新到 PyPI 最新稳定版
+vl update
 ```

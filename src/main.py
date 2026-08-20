@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -26,7 +27,13 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Copilot Proxy", version="0.1.0", lifespan=lifespan)
+try:
+    APP_VERSION = version("vela-llm")
+except PackageNotFoundError:
+    APP_VERSION = "unknown"
+
+
+app = FastAPI(title="vela-llm", version=APP_VERSION, lifespan=lifespan)
 
 
 @app.exception_handler(HTTPException)

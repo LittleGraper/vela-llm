@@ -22,6 +22,9 @@ vl login
 # Start the local proxy
 vl start
 
-# Show the API key and base URLs
-vl api
+# Show the API key and base URLs (the key is masked unless explicitly requested)
+vl api --show-key
+
+# Update to the latest stable PyPI release
+vl update
 ```

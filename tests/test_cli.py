@@ -76,9 +76,23 @@ def test_vl_without_args_prints_help(monkeypatch, tmp_path, capsys) -> None:
     cli.main([])
 
     output = capsys.readouterr().out
-    assert "Local GitHub Copilot proxy" in output
+    assert "vela-llm provides local access" in output
     assert "start" in output
     assert "models" in output
+
+
+def test_help_and_version_do_not_create_config_files(monkeypatch, tmp_path, capsys) -> None:
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("VELA_LLM_CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(cli, "package_version", lambda: "1.2.3")
+
+    cli.main([])
+    cli.main(["help"])
+    cli.main(["--version"])
+    cli.main(["version"])
+
+    capsys.readouterr()
+    assert not config_dir.exists()
 
 
 def test_vl_help_groups_duplicate_commands_and_hides_choices(monkeypatch, tmp_path, capsys) -> None:
@@ -116,6 +130,20 @@ def test_vl_config_is_not_registered(monkeypatch, tmp_path, capsys) -> None:
 
     output = capsys.readouterr()
     assert "invalid choice: 'config'" in output.err
+
+
+def test_vl_test_rejects_non_positive_timeout(monkeypatch, tmp_path, capsys) -> None:
+    prepare_config(monkeypatch, tmp_path)
+
+    for value in ("0", "-1"):
+        try:
+            cli.main(["test", "--timeout", value])
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("non-positive timeout should be rejected")
+
+    assert capsys.readouterr().err.count("must be greater than 0") == 2
 
 
 def test_vl_login_runs_device_flow(monkeypatch, tmp_path) -> None:
@@ -202,10 +230,19 @@ def test_vl_api_prints_openai_and_anthropic_settings(monkeypatch, tmp_path, caps
 
     output = capsys.readouterr().out
     assert "OpenAI Compatible:" in output
-    assert "API Key:  sk-local-test" in output
+    assert "API Key:  sk-...test" in output
+    assert "sk-local-test" not in output
     assert "Base URL: http://127.0.0.1:4321/v1" in output
     assert "Anthropic Compatible:" in output
     assert "Base URL: http://127.0.0.1:4321" in output
+
+
+def test_vl_api_show_key_prints_complete_key(monkeypatch, tmp_path, capsys) -> None:
+    prepare_config(monkeypatch, tmp_path)
+
+    cli.main(["api", "--show-key"])
+
+    assert "API Key:  sk-local-test" in capsys.readouterr().out
 
 
 def test_vl_logout_removes_saved_copilot_credentials(monkeypatch, tmp_path, capsys) -> None:
@@ -252,85 +289,26 @@ def test_require_copilot_login_prompts_for_login_when_credentials_are_missing(
     assert "Run `vl login` first" in capsys.readouterr().out
 
 
-def test_vl_update_installs_latest_github_release(monkeypatch, tmp_path, capsys) -> None:
+def test_vl_update_installs_latest_pypi_release(monkeypatch, tmp_path, capsys) -> None:
     prepare_config(monkeypatch, tmp_path)
     calls: list[list[str]] = []
-    requests: list[dict[str, object]] = []
-
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict[str, str]:
-            return {"tag_name": "v0.1.0"}
-
-    def fake_get(url: str, headers: dict[str, str], timeout: int) -> FakeResponse:
-        requests.append({"url": url, "headers": headers, "timeout": timeout})
-        return FakeResponse()
 
     def fake_run(command: list[str], check: bool) -> None:
         calls.append(command)
         assert check is True
 
-    monkeypatch.setattr(cli.httpx, "get", fake_get)
     monkeypatch.setattr(cli.subprocess, "run", fake_run)
 
     cli.main(["update"])
 
-    assert requests == [
-        {
-            "url": cli.GITHUB_LATEST_RELEASE_URL,
-            "headers": {"accept": "application/vnd.github+json"},
-            "timeout": 30,
-        }
-    ]
-    assert calls == [["uv", "tool", "install", "--force", cli.release_install_url("v0.1.0")]]
+    assert calls == [["uv", "tool", "install", "--force", "vela-llm"]]
     output = capsys.readouterr().out
-    assert "Updating vl to v0.1.0 from GitHub Releases" in output
-    assert "git+https://github.com/LittleGraper/vela-llm.git@v0.1.0" in output
-
-
-def test_vl_update_explains_missing_github_release(monkeypatch, tmp_path, capsys) -> None:
-    prepare_config(monkeypatch, tmp_path)
-
-    class FakeResponse:
-        status_code = 404
-
-        def raise_for_status(self) -> None:
-            request = cli.httpx.Request("GET", cli.GITHUB_LATEST_RELEASE_URL)
-            response = cli.httpx.Response(404, request=request)
-            raise cli.httpx.HTTPStatusError("not found", request=request, response=response)
-
-    monkeypatch.setattr(cli.httpx, "get", lambda *_, **__: FakeResponse())
-    monkeypatch.setattr(
-        cli.subprocess,
-        "run",
-        lambda *_, **__: (_ for _ in ()).throw(AssertionError("install should not run")),
-    )
-
-    try:
-        cli.main(["update"])
-    except SystemExit as exc:
-        assert exc.code == 1
-    else:
-        raise AssertionError("missing GitHub release should exit non-zero")
-
-    output = capsys.readouterr().out
-    assert "No GitHub release was found for LittleGraper/vela-llm" in output
-    assert "Create release v0.1.0 first" in output
+    assert "latest stable PyPI release" in output
+    assert "uv tool install --force vela-llm" in output
 
 
 def test_vl_update_prints_manual_command_for_windows_uv_tool(monkeypatch, tmp_path, capsys) -> None:
     prepare_config(monkeypatch, tmp_path)
-
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict[str, str]:
-            return {"tag_name": "v0.1.0"}
-
-    monkeypatch.setattr(cli.httpx, "get", lambda *_, **__: FakeResponse())
     monkeypatch.setattr(cli.sys, "platform", "win32")
     monkeypatch.setattr(cli, "is_running_from_uv_tool", lambda: True)
     monkeypatch.setattr(
@@ -347,8 +325,7 @@ def test_vl_update_prints_manual_command_for_windows_uv_tool(monkeypatch, tmp_pa
         raise AssertionError("manual Windows update should exit non-zero")
 
     output = capsys.readouterr().out
-    assert "uv tool install --force" in output
-    assert "git+https://github.com/LittleGraper/vela-llm.git@v0.1.0" in output
+    assert "uv tool install --force vela-llm" in output
     assert "Run the command above after this vl process exits" in output
 
 
@@ -383,7 +360,8 @@ def test_vl_start_prints_urls_key_and_starts_background_server(
     assert auth_calls == [True]
     assert "OpenAI Base URL:    http://127.0.0.1:4321/v1" in output
     assert "Anthropic Base URL: http://127.0.0.1:4321" in output
-    assert "API Key:            sk-local-test" in output
+    assert "API Key:            sk-...test" in output
+    assert "sk-local-test" not in output
     assert "Default model:      gpt-4" in output
     assert "Proxy is running in the background (pid 98765)." in output
     assert f"Log file:           {tmp_path / 'vela-llm.log'}" in output
@@ -813,12 +791,13 @@ def test_model_selection_redraws_only_choice_rows(monkeypatch, capsys) -> None:
 
 def test_stop_existing_instance_terminates_recorded_process(monkeypatch, tmp_path) -> None:
     pid_file = tmp_path / ".vela-llm.pid"
-    pid_file.write_text("12345", encoding="utf-8")
+    pid_file.write_text('{"pid":12345,"start_token":"created-1"}', encoding="utf-8")
 
     states = iter([True, False])
     terminated: list[int] = []
 
     monkeypatch.setattr(cli, "is_process_running", lambda pid: next(states))
+    monkeypatch.setattr(cli, "process_start_token", lambda pid: "created-1")
     monkeypatch.setattr(cli, "terminate_process", lambda pid: terminated.append(pid))
     monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
 
@@ -827,6 +806,22 @@ def test_stop_existing_instance_terminates_recorded_process(monkeypatch, tmp_pat
     assert stopped
     assert terminated == [12345]
     assert not pid_file.exists()
+
+
+def test_stop_existing_instance_ignores_reused_or_legacy_pid(monkeypatch, tmp_path) -> None:
+    pid_file = tmp_path / ".vela-llm.pid"
+    monkeypatch.setattr(cli, "is_process_running", lambda pid: True)
+    monkeypatch.setattr(cli, "process_start_token", lambda pid: "new-process")
+    monkeypatch.setattr(
+        cli,
+        "terminate_process",
+        lambda pid: (_ for _ in ()).throw(AssertionError("unrelated process must not be stopped")),
+    )
+
+    for contents in ('{"pid":12345,"start_token":"old-process"}', "12345"):
+        pid_file.write_text(contents, encoding="utf-8")
+        assert not cli.stop_existing_instance(pid_file)
+        assert not pid_file.exists()
 
 
 def test_is_process_running_uses_windows_api(monkeypatch) -> None:
@@ -896,6 +891,6 @@ def test_ensure_port_available_fails_for_unmanaged_process(monkeypatch) -> None:
     try:
         cli.ensure_port_available("127.0.0.1", 4000)
     except RuntimeError as exc:
-        assert "no restartable Copilot Proxy instance was found" in str(exc)
+        assert "no restartable vela-llm instance was found" in str(exc)
     else:
         raise AssertionError("occupied unmanaged port should fail")
