@@ -1,0 +1,38 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    name: Publish release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/vela-llm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          version="$(uv version --short)"
+          test "v${version}" = "${GITHUB_REF_NAME}" || {
+            echo "Release tag ${GITHUB_REF_NAME} does not match package version ${version}."
+            exit 1
+          }
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always
