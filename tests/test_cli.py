@@ -66,6 +66,7 @@ def prepare_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VELA_LLM_PORT", "4321")
     monkeypatch.setenv("VELA_LLM_MODELS_CONFIG", "models.toml")
     monkeypatch.setattr(Settings, "dynamic_model_registry", fake_dynamic_model_registry)
+    monkeypatch.setattr(cli, "refresh_model_cache", lambda config_dir: None)
     monkeypatch.chdir(tmp_path)
     get_settings.cache_clear()
 
@@ -366,6 +367,35 @@ def test_vl_start_prints_urls_key_and_starts_background_server(
     assert "Proxy is running in the background (pid 98765)." in output
     assert f"Log file:           {tmp_path / 'vela-llm.log'}" in output
     assert pid_writes == [(str(tmp_path / ".vela-llm.pid"), 98765)]
+
+
+def test_vl_start_refreshes_model_metadata_before_launch(monkeypatch, tmp_path) -> None:
+    prepare_config(monkeypatch, tmp_path)
+    calls: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(cli, "require_copilot_login", lambda: calls.append(("auth", "")))
+    monkeypatch.setattr(
+        cli,
+        "refresh_model_cache",
+        lambda config_dir: calls.append(("refresh", str(config_dir))),
+    )
+    monkeypatch.setattr(cli, "stop_existing_instance", lambda pid_file: None)
+    monkeypatch.setattr(cli, "ensure_port_available", lambda host, port: None)
+    monkeypatch.setattr(
+        cli,
+        "start_server_background",
+        lambda settings, config_dir: calls.append(("launch", str(config_dir))) or FakeProcess(),
+    )
+    monkeypatch.setattr(cli, "wait_for_port", lambda host, port, process: True)
+    monkeypatch.setattr(cli, "write_pid_file", lambda pid_file, pid: None)
+
+    cli.main(["start"])
+
+    assert calls == [
+        ("auth", ""),
+        ("refresh", str(tmp_path)),
+        ("launch", str(tmp_path)),
+    ]
 
 
 def test_vl_start_foreground_runs_uvicorn_in_current_process(monkeypatch, tmp_path) -> None:

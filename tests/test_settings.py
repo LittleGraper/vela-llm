@@ -99,6 +99,38 @@ default = "gpt-4o"
     assert settings.upstream_model(None) == "github_copilot/gpt-4o"
 
 
+def test_cached_model_metadata_takes_precedence(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("VELA_LLM_DISABLE_DYNAMIC_MODELS", "1")
+    config = tmp_path / "models.toml"
+    config.write_text('[models]\ndefault = "gpt-cached"\n', encoding="utf-8")
+    (tmp_path / "models-cache.json").write_text(
+        """{
+  "models": [
+    {
+      "name": "gpt-cached",
+      "upstream": "github_copilot/gpt-cached",
+      "max_tokens": 400000,
+      "max_input_tokens": 272000,
+      "max_output_tokens": 128000
+    }
+  ]
+}
+""",
+        encoding="utf-8",
+    )
+    settings = Settings(LOCAL_API_KEY="sk-test", VELA_LLM_MODELS_CONFIG=config)
+
+    assert settings.model_registry() == [
+        {
+            "name": "gpt-cached",
+            "upstream": "github_copilot/gpt-cached",
+            "max_tokens": 400000,
+            "max_input_tokens": 272000,
+            "max_output_tokens": 128000,
+        }
+    ]
+
+
 def test_ensure_config_files_uses_packaged_models_template(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VELA_LLM_CONFIG_DIR", str(tmp_path))
 

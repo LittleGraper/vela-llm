@@ -52,13 +52,17 @@ class Settings(BaseSettings):
                 return entry["upstream"]
         return f"github_copilot/{selected}"
 
-    def model_registry(self) -> list[dict[str, str]]:
-        dynamic = self.dynamic_model_registry()
-        if dynamic:
-            return dynamic
-        return self.local_model_registry()
+    def model_registry(self) -> list[dict[str, Any]]:
+        from github_copilot_models import load_model_cache
 
-    def dynamic_model_registry(self) -> list[dict[str, str]]:
+        cached = load_model_cache(
+            resolve_config_path(self.models_config).parent / "models-cache.json"
+        )
+        if cached:
+            return cached
+        return self.dynamic_model_registry() or self.local_model_registry()
+
+    def dynamic_model_registry(self) -> list[dict[str, Any]]:
         if self._dynamic_models_disabled():
             return []
         try:
@@ -69,14 +73,14 @@ class Settings(BaseSettings):
             return []
         return self._with_default_model(registry)
 
-    def local_model_registry(self) -> list[dict[str, str]]:
+    def local_model_registry(self) -> list[dict[str, Any]]:
         models_data = self._models_data().get("models", {})
         default = models_data.get("default")
         if isinstance(default, str) and default:
             return [{"name": default, "upstream": self._default_upstream(default)}]
         return [{"name": "gpt-4", "upstream": "github_copilot/gpt-4"}]
 
-    def _with_default_model(self, registry: list[dict[str, str]]) -> list[dict[str, str]]:
+    def _with_default_model(self, registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
         default = self._models_data().get("models", {}).get("default")
         if (
             isinstance(default, str)
@@ -94,11 +98,14 @@ class Settings(BaseSettings):
         return value.lower() in {"1", "true", "yes", "on"}
 
     def validate_runtime(self) -> None:
-        if not self.local_api_key:
-            msg = "LOCAL_API_KEY is required. Copy .env.example to .env and set a local key."
-            raise RuntimeError(msg)
+        self.validate_local_api_key()
         if not self.aliases:
             msg = f"No models configured. Add aliases to {self.models_config}."
+            raise RuntimeError(msg)
+
+    def validate_local_api_key(self) -> None:
+        if not self.local_api_key:
+            msg = "LOCAL_API_KEY is required. Copy .env.example to .env and set a local key."
             raise RuntimeError(msg)
 
     def _models_data(self) -> dict[str, Any]:

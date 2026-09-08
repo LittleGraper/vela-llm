@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import github_copilot_models
 
 
@@ -22,6 +24,13 @@ def test_fetch_available_models_maps_supported_endpoints(monkeypatch) -> None:
                         "id": "gpt-chat",
                         "model_picker_enabled": True,
                         "supported_endpoints": ["/chat/completions"],
+                        "capabilities": {
+                            "limits": {
+                                "max_context_window_tokens": 400000,
+                                "max_prompt_tokens": 272000,
+                                "max_output_tokens": 128000,
+                            }
+                        },
                     },
                     {
                         "id": "gpt-responses",
@@ -48,10 +57,32 @@ def test_fetch_available_models_maps_supported_endpoints(monkeypatch) -> None:
     monkeypatch.setattr(github_copilot_models.httpx, "get", lambda *_, **__: FakeResponse())
 
     assert github_copilot_models.fetch_available_models() == [
-        {"name": "gpt-chat", "upstream": "github_copilot/gpt-chat"},
+        {
+            "name": "gpt-chat",
+            "upstream": "github_copilot/gpt-chat",
+            "max_tokens": 400000,
+            "max_input_tokens": 272000,
+            "max_output_tokens": 128000,
+        },
         {
             "name": "gpt-responses",
             "upstream": "github_copilot/gpt-responses",
             "mode": "responses",
         },
     ]
+
+
+def test_refresh_and_load_model_cache(monkeypatch, tmp_path) -> None:
+    registry = [
+        {
+            "name": "gpt-test",
+            "upstream": "github_copilot/gpt-test",
+            "max_tokens": 400000,
+        }
+    ]
+    monkeypatch.setattr(github_copilot_models, "fetch_available_models", lambda: registry)
+    cache = tmp_path / "models-cache.json"
+
+    assert github_copilot_models.refresh_model_cache(cache) == registry
+    assert github_copilot_models.load_model_cache(cache) == registry
+    assert json.loads(cache.read_text(encoding="utf-8")) == {"models": registry}

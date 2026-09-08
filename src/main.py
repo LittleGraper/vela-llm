@@ -59,9 +59,10 @@ async def healthz() -> dict[str, Any]:
 @app.get("/v1/models", dependencies=[Depends(require_api_key)])
 @app.get("/models", dependencies=[Depends(require_api_key)])
 async def models() -> dict[str, Any]:
+    registry = get_settings().model_registry()
     return {
         "object": "list",
-        "data": [model_object(model["name"]) for model in get_settings().model_registry()],
+        "data": [model_object(model["name"], model) for model in registry],
     }
 
 

@@ -316,13 +316,18 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
-def model_object(model_id: str) -> dict[str, Any]:
-    return {
+def model_object(model_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    model = {
         "id": model_id,
         "object": "model",
         "created": int(time.time()),
         "owned_by": "github-copilot",
     }
+    if metadata:
+        for key in ("max_tokens", "max_input_tokens", "max_output_tokens"):
+            if key in metadata:
+                model[key] = metadata[key]
+    return model
 
 
 def chunk_text(chunk: Any) -> str:

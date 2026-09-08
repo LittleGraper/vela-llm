@@ -28,3 +28,8 @@ vl api --show-key
 # Update to the latest stable PyPI release
 vl update
 ```
+
+Each `vl start` refreshes the GitHub Copilot model catalog and stores its public
+capabilities in `models-cache.json` inside the vela-llm configuration directory.
+The proxy registers Copilot's maximum context window, prompt limit, and output
+limit with LiteLLM; it does not use a smaller default context window.

@@ -28,3 +28,7 @@ vl api --show-key
 # 更新到 PyPI 最新稳定版
 vl update
 ```
+
+每次执行 `vl start` 都会重新获取 GitHub Copilot 模型目录，并将公开能力信息缓存到
+vela-llm 配置目录下的 `models-cache.json`。代理会把 Copilot 返回的最大上下文窗口、
+输入上限和输出上限注册到 LiteLLM，不使用较小的默认上下文窗口。

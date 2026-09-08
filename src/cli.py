@@ -307,16 +307,18 @@ def positive_float(value: str) -> float:
 
 def start(args: argparse.Namespace) -> None:
     settings = get_settings()
-    settings.validate_runtime()
+    settings.validate_local_api_key()
     config_dir = active_config_dir()
     pid_file = config_dir / ".vela-llm.pid"
-    if not args.no_restart_existing and stop_existing_instance(pid_file):
-        wait_for_port_available(settings.host, settings.port)
-    ensure_port_available(settings.host, settings.port)
 
     if not args.skip_auth_check:
         require_copilot_login()
 
+    refresh_model_cache(config_dir)
+    settings.validate_runtime()
+    if not args.no_restart_existing and stop_existing_instance(pid_file):
+        wait_for_port_available(settings.host, settings.port)
+    ensure_port_available(settings.host, settings.port)
     print_startup_info(settings)
     if args.foreground:
         run_server_foreground(settings, pid_file)
@@ -1037,6 +1039,17 @@ def print_startup_info(settings) -> None:
     print(f"API Key:            {mask_api_key(settings.local_api_key)}", flush=True)
     print(f"Default model:      {settings.default_model}", flush=True)
     print("", flush=True)
+
+
+def refresh_model_cache(config_dir: Path) -> None:
+    from github_copilot_models import refresh_model_cache as refresh
+
+    cache_path = config_dir / "models-cache.json"
+    try:
+        registry = refresh(cache_path)
+    except Exception as exc:
+        raise RuntimeError(f"Could not refresh GitHub Copilot model metadata: {exc}") from exc
+    print(f"Model metadata:     refreshed {len(registry)} models", flush=True)
 
 
 def print_api_info(settings, *, show_key: bool = False) -> None:
