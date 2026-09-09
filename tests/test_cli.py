@@ -4,6 +4,7 @@ import threading
 from contextlib import suppress
 
 import cli
+import github_copilot_models
 from settings import Settings, get_settings
 
 
@@ -396,6 +397,46 @@ def test_vl_start_refreshes_model_metadata_before_launch(monkeypatch, tmp_path) 
         ("refresh", str(tmp_path)),
         ("launch", str(tmp_path)),
     ]
+
+
+def test_vl_start_continues_offline_without_retrying_dynamic_models(
+    monkeypatch, tmp_path
+) -> None:
+    prepare_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("VELA_LLM_DISABLE_DYNAMIC_MODELS")
+    launches: list[bool] = []
+
+    monkeypatch.setattr(cli, "require_copilot_login", lambda: None)
+    monkeypatch.setattr(cli, "refresh_model_cache", lambda config_dir: False)
+    monkeypatch.setattr(cli, "stop_existing_instance", lambda pid_file: None)
+    monkeypatch.setattr(cli, "ensure_port_available", lambda host, port: None)
+    monkeypatch.setattr(
+        cli,
+        "start_server_background",
+        lambda settings, config_dir: launches.append(True) or FakeProcess(),
+    )
+    monkeypatch.setattr(cli, "wait_for_port", lambda host, port, process: True)
+    monkeypatch.setattr(cli, "write_pid_file", lambda pid_file, pid: None)
+
+    cli.main(["start"])
+
+    assert launches == [True]
+    assert cli.os.environ["VELA_LLM_DISABLE_DYNAMIC_MODELS"] == "1"
+
+
+def test_refresh_model_cache_uses_existing_cache_on_network_failure(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    cache_path = tmp_path / "models-cache.json"
+    cache_path.write_text('{"models": []}\n', encoding="utf-8")
+
+    def fail_refresh(path) -> None:
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr(github_copilot_models, "refresh_model_cache", fail_refresh)
+
+    assert not cli.refresh_model_cache(tmp_path)
+    assert "using cached metadata" in capsys.readouterr().out
 
 
 def test_vl_start_foreground_runs_uvicorn_in_current_process(monkeypatch, tmp_path) -> None:

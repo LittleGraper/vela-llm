@@ -314,7 +314,8 @@ def start(args: argparse.Namespace) -> None:
     if not args.skip_auth_check:
         require_copilot_login()
 
-    refresh_model_cache(config_dir)
+    if not refresh_model_cache(config_dir):
+        os.environ["VELA_LLM_DISABLE_DYNAMIC_MODELS"] = "1"
     settings.validate_runtime()
     if not args.no_restart_existing and stop_existing_instance(pid_file):
         wait_for_port_available(settings.host, settings.port)
@@ -1041,15 +1042,21 @@ def print_startup_info(settings) -> None:
     print("", flush=True)
 
 
-def refresh_model_cache(config_dir: Path) -> None:
+def refresh_model_cache(config_dir: Path) -> bool:
     from github_copilot_models import refresh_model_cache as refresh
 
     cache_path = config_dir / "models-cache.json"
     try:
         registry = refresh(cache_path)
     except Exception as exc:
-        raise RuntimeError(f"Could not refresh GitHub Copilot model metadata: {exc}") from exc
+        fallback = "cached metadata" if cache_path.exists() else "the configured default model"
+        print(
+            f"Model metadata:     refresh failed ({short_error(exc)}); using {fallback}.",
+            flush=True,
+        )
+        return False
     print(f"Model metadata:     refreshed {len(registry)} models", flush=True)
+    return True
 
 
 def print_api_info(settings, *, show_key: bool = False) -> None:
