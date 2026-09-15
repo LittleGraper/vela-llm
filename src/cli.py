@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -17,6 +18,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 
+from banner import render_startup_banner
 from config_files import active_config_dir, ensure_config_files, resolve_config_path
 from github_copilot_patch import apply_github_copilot_oauth_patch
 from litellm_registry import register_litellm_model_metadata
@@ -1033,6 +1035,11 @@ def is_port_available(host: str, port: int) -> bool:
 def print_startup_info(settings) -> None:
     root_base_url, openai_base_url = local_api_urls(settings)
 
+    print("", flush=True)
+    print(
+        render_startup_banner(color=supports_color(), width=shutil.get_terminal_size().columns),
+        flush=True,
+    )
     print("", flush=True)
     print("vela-llm is starting...", flush=True)
     print(f"OpenAI Base URL:    {openai_base_url}", flush=True)

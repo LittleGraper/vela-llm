@@ -29,6 +29,10 @@ vl api --show-key
 vl update
 ```
 
+Each `vl start` displays one of four randomly selected static VELA wordmarks.
+The banner uses cyan accents in color terminals, plain text when redirected or
+`NO_COLOR` is set, and a compact wordmark in narrow terminals.
+
 Each `vl start` refreshes the GitHub Copilot model catalog and stores its public
 capabilities in `models-cache.json` inside the vela-llm configuration directory.
 The proxy registers Copilot's maximum context window, prompt limit, and output
