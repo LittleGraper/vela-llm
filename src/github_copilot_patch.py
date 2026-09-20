@@ -7,8 +7,11 @@ from typing import Any
 
 import httpx
 
+from github_copilot_headers import VELA_USER_AGENT, apply_github_copilot_header_patch
+
 
 def apply_github_copilot_oauth_patch() -> None:
+    apply_github_copilot_header_patch()
     from litellm._logging import verbose_logger
     from litellm.llms.github_copilot import authenticator as auth_module
     from litellm.llms.github_copilot.common_utils import (
@@ -24,7 +27,7 @@ def apply_github_copilot_oauth_patch() -> None:
         return {
             "accept": "application/json",
             "content-type": "application/x-www-form-urlencoded",
-            "user-agent": "GithubCopilot/1.155.0",
+            "user-agent": VELA_USER_AGENT,
         }
 
     def patched_get_device_code(self: Any) -> dict[str, str]:

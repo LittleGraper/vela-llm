@@ -45,6 +45,12 @@ def fetch_available_models() -> list[dict[str, Any]]:
         limits = _model_limits(model)
         if limits:
             entry.update(limits)
+        for key in ("capabilities", "billing"):
+            if isinstance(model.get(key), dict):
+                entry[key] = model[key]
+        if endpoints:
+            entry["supported_endpoints"] = endpoints
+        entry.update(_context_options(model, limits))
         if "/embeddings" in endpoints:
             entry["mode"] = "embedding"
         elif "/responses" in endpoints and "/chat/completions" not in endpoints:
@@ -95,3 +101,23 @@ def _model_limits(model: dict[str, Any]) -> dict[str, int]:
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             parsed[target] = value
     return parsed
+
+
+def _context_options(model: dict[str, Any], limits: dict[str, int]) -> dict[str, Any]:
+    billing = model.get("billing")
+    prices = billing.get("token_prices") if isinstance(billing, dict) else None
+    default = prices.get("default") if isinstance(prices, dict) else None
+    if not isinstance(default, dict):
+        return {}
+    value = default.get("max_prompt_tokens", default.get("context_max"))
+    maximum = limits.get("max_input_tokens")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0 or not maximum:
+        return {}
+    if value > maximum:
+        return {}
+    # Match the editor's input choices. Billing's long_context limit is kept
+    # separately in the unmodified billing metadata, not used as a capability cap.
+    return {
+        "default_context_size": value,
+        "context_size_options": sorted({value, maximum}),
+    }

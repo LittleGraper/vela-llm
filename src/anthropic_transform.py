@@ -324,7 +324,16 @@ def model_object(model_id: str, metadata: dict[str, Any] | None = None) -> dict[
         "owned_by": "github-copilot",
     }
     if metadata:
-        for key in ("max_tokens", "max_input_tokens", "max_output_tokens"):
+        for key in (
+            "max_tokens",
+            "max_input_tokens",
+            "max_output_tokens",
+            "capabilities",
+            "billing",
+            "supported_endpoints",
+            "default_context_size",
+            "context_size_options",
+        ):
             if key in metadata:
                 model[key] = metadata[key]
     return model

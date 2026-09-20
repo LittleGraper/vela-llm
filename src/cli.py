@@ -20,6 +20,7 @@ import uvicorn
 
 from banner import render_startup_banner
 from config_files import active_config_dir, ensure_config_files, resolve_config_path
+from github_copilot_headers import github_user_headers
 from github_copilot_patch import apply_github_copilot_oauth_patch
 from litellm_registry import register_litellm_model_metadata
 from model_store import write_default_model
@@ -799,14 +800,6 @@ def fetch_github_account(authenticator) -> dict[str, object]:
     if not isinstance(data, dict):
         raise RuntimeError("GitHub user response was not an object.")
     return data
-
-
-def github_user_headers(access_token: str) -> dict[str, str]:
-    return {
-        "accept": "application/vnd.github+json",
-        "authorization": f"token {access_token}",
-        "user-agent": "GithubCopilot/1.155.0",
-    }
 
 
 def has_access_token(authenticator) -> bool:
