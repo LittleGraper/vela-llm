@@ -35,3 +35,10 @@ vl update
 每次执行 `vl start` 都会重新获取 GitHub Copilot 模型目录，并将公开能力信息缓存到
 vela-llm 配置目录下的 `models-cache.json`。代理会把 Copilot 返回的最大上下文窗口、
 输入上限和输出上限注册到 LiteLLM，不使用较小的默认上下文窗口。
+
+模型查询和推理统一使用 Copilot API `2026-08-01`，兼容客户端标识为 VS Code
+`1.137.0` / Copilot Chat `0.65.0`。GitHub 账号查询独立使用 REST API `2022-11-28`。
+`/v1/models` 保留 `capabilities`、`billing` 和 `supported_endpoints`，并在目录提供
+相应信息时返回 `default_context_size` 和 `context_size_options`。选项取默认计费输入
+阈值和最大输入能力；长上下文计费阈值单独保留在原始 `billing` 中，不混作能力上限。
+元数据上限不代表已实测最大长度推理。升级后需重启 VELA，刷新模型缓存和请求头。

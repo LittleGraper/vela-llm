@@ -37,3 +37,13 @@ Each `vl start` refreshes the GitHub Copilot model catalog and stores its public
 capabilities in `models-cache.json` inside the vela-llm configuration directory.
 The proxy registers Copilot's maximum context window, prompt limit, and output
 limit with LiteLLM; it does not use a smaller default context window.
+
+VELA uses Copilot API version `2026-08-01` for model discovery and inference,
+with a shared VS Code `1.137.0` / Copilot Chat `0.65.0` compatibility profile.
+Public GitHub account queries separately use REST API version `2022-11-28`.
+`/v1/models` also preserves `capabilities`, `billing`, and `supported_endpoints`,
+and exposes `default_context_size` and `context_size_options` when provided by
+the catalog. Options use the default billing input threshold and maximum input
+capability; the raw long-context billing threshold is preserved separately.
+These metadata limits do not prove successful inference at the maximum size.
+Restart VELA after upgrading to refresh the model cache and request headers.

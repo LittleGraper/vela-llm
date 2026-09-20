@@ -63,11 +63,20 @@ def test_fetch_available_models_maps_supported_endpoints(monkeypatch) -> None:
             "max_tokens": 400000,
             "max_input_tokens": 272000,
             "max_output_tokens": 128000,
+            "capabilities": {
+                "limits": {
+                    "max_context_window_tokens": 400000,
+                    "max_prompt_tokens": 272000,
+                    "max_output_tokens": 128000,
+                }
+            },
+            "supported_endpoints": ["/chat/completions"],
         },
         {
             "name": "gpt-responses",
             "upstream": "github_copilot/gpt-responses",
             "mode": "responses",
+            "supported_endpoints": ["/responses"],
         },
     ]
 

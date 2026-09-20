@@ -197,7 +197,8 @@ def test_vl_whoami_prints_current_github_account(monkeypatch, tmp_path, capsys) 
             "headers": {
                 "accept": "application/vnd.github+json",
                 "authorization": "token saved-token",
-                "user-agent": "GithubCopilot/1.155.0",
+                "user-agent": "vela-llm",
+                "x-github-api-version": "2022-11-28",
             },
             "timeout": 30,
         }
@@ -399,9 +400,7 @@ def test_vl_start_refreshes_model_metadata_before_launch(monkeypatch, tmp_path) 
     ]
 
 
-def test_vl_start_continues_offline_without_retrying_dynamic_models(
-    monkeypatch, tmp_path
-) -> None:
+def test_vl_start_continues_offline_without_retrying_dynamic_models(monkeypatch, tmp_path) -> None:
     prepare_config(monkeypatch, tmp_path)
     monkeypatch.delenv("VELA_LLM_DISABLE_DYNAMIC_MODELS")
     launches: list[bool] = []
