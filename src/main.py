@@ -71,10 +71,9 @@ async def models() -> dict[str, Any]:
 async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
     body = await request.json()
     settings = get_settings()
-    body["model"] = settings.upstream_model(body.get("model"))
-    litellm = _litellm()
-
     try:
+        body["model"] = settings.upstream_model(body.get("model"))
+        litellm = _litellm()
         if body.get("stream"):
             stream = await litellm.acompletion(**body)
             return StreamingResponse(_openai_sse(stream), media_type="text/event-stream")
@@ -92,10 +91,9 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     settings = get_settings()
     requested_model = body.get("model") or settings.default_model
     kwargs = to_litellm_completion_kwargs(body, requested_model)
-    kwargs["model"] = settings.upstream_model(kwargs.get("model"))
-    litellm = _litellm()
-
     try:
+        kwargs["model"] = settings.upstream_model(body.get("model"))
+        litellm = _litellm()
         if kwargs.get("stream"):
             stream = await litellm.acompletion(**kwargs)
             return StreamingResponse(
@@ -113,9 +111,9 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
 @app.post("/embeddings", dependencies=[Depends(require_api_key)])
 async def embeddings(request: Request) -> JSONResponse:
     body = await request.json()
-    body["model"] = get_settings().upstream_model(body.get("model"))
-    litellm = _litellm()
     try:
+        body["model"] = get_settings().upstream_model(body.get("model"))
+        litellm = _litellm()
         response = await litellm.aembedding(**body)
         return JSONResponse(as_dict(response))
     except Exception as exc:
@@ -125,10 +123,9 @@ async def embeddings(request: Request) -> JSONResponse:
 @app.post("/v1/responses", dependencies=[Depends(require_api_key)], response_model=None)
 async def responses(request: Request) -> JSONResponse | StreamingResponse:
     body = await request.json()
-    body["model"] = get_settings().upstream_model(body.get("model"))
-    litellm = _litellm()
-
     try:
+        body["model"] = get_settings().upstream_model(body.get("model"))
+        litellm = _litellm()
         if body.get("stream"):
             stream = await litellm.aresponses(**body)
             return StreamingResponse(_openai_response_sse(stream), media_type="text/event-stream")

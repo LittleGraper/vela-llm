@@ -94,4 +94,5 @@ def test_refresh_and_load_model_cache(monkeypatch, tmp_path) -> None:
 
     assert github_copilot_models.refresh_model_cache(cache) == registry
     assert github_copilot_models.load_model_cache(cache) == registry
-    assert json.loads(cache.read_text(encoding="utf-8")) == {"models": registry}
+    assert json.loads(cache.read_text(encoding="utf-8"))["models"] == registry
+    assert json.loads(cache.read_text(encoding="utf-8"))["fetched_at"]

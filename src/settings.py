@@ -1,4 +1,3 @@
-import os
 import tomllib
 from functools import lru_cache
 from pathlib import Path
@@ -8,6 +7,12 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from config_files import env_file_for_settings, resolve_config_path
+from model_context import with_context
+
+
+class UnavailableModelError(ValueError):
+    status_code = 404
+    code = "model_not_found"
 
 
 class Settings(BaseSettings):
@@ -45,6 +50,10 @@ class Settings(BaseSettings):
 
     def upstream_model(self, model: str | None) -> str:
         selected = model or self.default_model
+        if not model and self.has_model_catalog() and selected not in self.aliases:
+            raise UnavailableModelError(
+                f"Default model '{selected}' is unavailable. Run `vl models` to select another."
+            )
         if "/" in selected:
             return selected
         for entry in self.model_registry():
@@ -53,25 +62,30 @@ class Settings(BaseSettings):
         return f"github_copilot/{selected}"
 
     def model_registry(self) -> list[dict[str, Any]]:
+        return with_context(self.raw_model_registry(), self.context_preferences())
+
+    @property
+    def model_cache_path(self) -> Path:
+        return resolve_config_path(self.models_config).parent / "models-cache.json"
+
+    def context_preferences(self) -> dict[str, Any]:
+        preferences = self._models_data().get("models", {}).get("context", {})
+        if not isinstance(preferences, dict):
+            raise ValueError("models.context must be a TOML table.")
+        return preferences
+
+    def has_model_catalog(self) -> bool:
         from github_copilot_models import load_model_cache
 
-        cached = load_model_cache(
-            resolve_config_path(self.models_config).parent / "models-cache.json"
-        )
+        return bool(load_model_cache(self.model_cache_path))
+
+    def raw_model_registry(self) -> list[dict[str, Any]]:
+        from github_copilot_models import load_model_cache
+
+        cached = load_model_cache(self.model_cache_path)
         if cached:
             return cached
-        return self.dynamic_model_registry() or self.local_model_registry()
-
-    def dynamic_model_registry(self) -> list[dict[str, Any]]:
-        if self._dynamic_models_disabled():
-            return []
-        try:
-            from github_copilot_models import fetch_available_models
-
-            registry = fetch_available_models()
-        except Exception:
-            return []
-        return self._with_default_model(registry)
+        return self.local_model_registry()
 
     def local_model_registry(self) -> list[dict[str, Any]]:
         models_data = self._models_data().get("models", {})
@@ -79,23 +93,6 @@ class Settings(BaseSettings):
         if isinstance(default, str) and default:
             return [{"name": default, "upstream": self._default_upstream(default)}]
         return [{"name": "gpt-4", "upstream": "github_copilot/gpt-4"}]
-
-    def _with_default_model(self, registry: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        default = self._models_data().get("models", {}).get("default")
-        if (
-            isinstance(default, str)
-            and default
-            and default not in {entry["name"] for entry in registry}
-        ):
-            registry.insert(
-                0,
-                {"name": default, "upstream": self._default_upstream(default)},
-            )
-        return registry
-
-    def _dynamic_models_disabled(self) -> bool:
-        value = os.getenv("VELA_LLM_DISABLE_DYNAMIC_MODELS", "")
-        return value.lower() in {"1", "true", "yes", "on"}
 
     def validate_runtime(self) -> None:
         self.validate_local_api_key()

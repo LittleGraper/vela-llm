@@ -333,6 +333,10 @@ def model_object(model_id: str, metadata: dict[str, Any] | None = None) -> dict[
             "supported_endpoints",
             "default_context_size",
             "context_size_options",
+            "context_mode",
+            "configured_context_size",
+            "context_size",
+            "context_status",
         ):
             if key in metadata:
                 model[key] = metadata[key]
