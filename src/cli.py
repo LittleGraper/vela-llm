@@ -17,21 +17,22 @@ from pathlib import Path
 
 import httpx
 import uvicorn
+from rich import box
+from rich.live import Live
+from rich.table import Table
+from rich.text import Text
 
 from banner import render_startup_banner
-from config_files import active_config_dir, ensure_config_files, resolve_config_path
+from cli_ui import VlArgumentParser, activity, fields, heading, make_console, message, output
+from config_files import active_config_dir, ensure_config_files
 from github_copilot_headers import github_user_headers
 from github_copilot_patch import apply_github_copilot_oauth_patch
 from litellm_registry import register_litellm_model_metadata
-from model_store import write_default_model
 from settings import get_settings
+from workspace_output import write_model_test_snapshot
 
 PYPI_PACKAGE = "vela-llm"
 MODEL_TEST_PROGRESS_INTERVAL = 0.1
-MODEL_TEST_SPINNER_FRAMES = ("-", "\\", "|", "/")
-MODEL_TEST_STATUS_WIDTH = 6
-MODEL_TEST_MODEL_WIDTH = len("MODEL")
-MODEL_TEST_COLUMN_GAP = "\t"
 
 
 @dataclass(frozen=True)
@@ -48,152 +49,78 @@ class PidRecord:
 
 
 class ModelTestProgress:
+    """Rich owns column widths and live redraw, including terminal resizing."""
+
     def __init__(self, registry: list[dict[str, str]]) -> None:
         self.registry = registry
-        self.is_interactive = sys.stdout.isatty()
-        self.frame_index = 0
-        self.rendered_lines = 0
-        self.completed = 0
-        self.model_width = max(
-            MODEL_TEST_MODEL_WIDTH,
-            *(len(format_model_test_name(entry)) for entry in registry),
+        self.console = make_console()
+        self.results: dict[str, ModelTestResult] = {}
+        self.live: Live | None = None
+        self.workspace = os.environ.get("VELA_LLM_WORKSPACE_COMMAND") == "1"
+        self.last_snapshot_count = -1
+
+    def table(self) -> Table:
+        table = Table(
+            title=f"Testing models {len(self.results)}/{len(self.registry)} complete",
+            box=box.SIMPLE_HEAD,
+            header_style="bold #70dfdf",
         )
-        self.rows = [
-            format_model_test_pending(entry, model_width=self.model_width) for entry in registry
-        ]
-        self.index_by_name = {entry["name"]: index for index, entry in enumerate(registry)}
+        table.add_column("STATUS", no_wrap=True)
+        table.add_column("MODEL", overflow="fold")
+        table.add_column("PING", justify="right", no_wrap=True)
+        table.add_column("DETAILS", overflow="fold")
+        for entry in self.registry:
+            result = self.results.get(entry["name"])
+            status = Text("RUN", style="cyan")
+            if result is not None:
+                status = (
+                    Text("PASS", style="green")
+                    if result.error is None
+                    else Text("Fail", style="red")
+                )
+            table.add_row(
+                status,
+                Text(entry["name"]),
+                format_ping(result.ping_ms) if result is not None else "...",
+                Text(short_error(result.error)) if result is not None and result.error else "",
+            )
+        return table
 
     def start(self) -> None:
-        self._render()
+        if self.workspace:
+            self.update_snapshot()
+        elif sys.stdout.isatty():
+            self.live = Live(self.table(), console=self.console, auto_refresh=False)
+            self.live.start(refresh=True)
+        else:
+            self.console.print(self.table())
 
     def tick(self, *, completed: int) -> None:
-        if not self.is_interactive:
+        if self.workspace:
+            self.update_snapshot()
+        elif self.live:
+            self.live.update(self.table(), refresh=True)
+
+    def update_snapshot(self) -> None:
+        if self.last_snapshot_count == len(self.results):
             return
-        self.completed = completed
-        self._render()
+        with self.console.capture() as capture:
+            self.console.print(self.table())
+        write_model_test_snapshot(capture.get())
+        self.last_snapshot_count = len(self.results)
 
     def finish(self, result: ModelTestResult) -> None:
-        self.completed += 1
-        self.rows[self.index_by_name[result.entry["name"]]] = format_model_test_result(
-            result,
-            model_width=self.model_width,
-        )
-        if self.is_interactive:
-            self._render()
+        self.results[result.entry["name"]] = result
+        self.tick(completed=len(self.results))
 
     def stop(self) -> None:
-        if not self.is_interactive and self.completed:
-            self._render()
-
-    def _render(self) -> None:
-        lines = self._lines()
-        if self.is_interactive:
-            self._rewrite_lines(lines)
-            return
-        for line in lines:
-            print(line, flush=True)
-
-    def _lines(self) -> list[str]:
-        frame = MODEL_TEST_SPINNER_FRAMES[self.frame_index % len(MODEL_TEST_SPINNER_FRAMES)]
-        self.frame_index += 1
-        header = f"{frame} Testing models {self.completed}/{len(self.registry)} complete"
-        return [header, format_model_test_header(model_width=self.model_width), *self.rows]
-
-    def _rewrite_lines(self, lines: list[str]) -> None:
-        if not self.rendered_lines:
-            for line in lines:
-                print(line)
-            self.rendered_lines = len(lines)
-            return
-        print(f"\033[{self.rendered_lines}F", end="")
-        for line in lines:
-            print(f"\r{line}\033[K")
-        self.rendered_lines = len(lines)
-
-
-class ModelSelectionView:
-    def __init__(self, registry: list[dict[str, str]], default_model: str) -> None:
-        self.registry = registry
-        self.default_model = default_model
-        self.is_interactive = sys.stdin.isatty()
-        self.rendered_lines = 0
-
-    def render(self, selected: int) -> None:
-        rows = self._rows(selected)
-        if self.is_interactive:
-            self._rewrite_rows(rows)
-            return
-        for line in [self._title(), "", *rows]:
-            print(line, flush=True)
-
-    def finish(self) -> None:
-        self.rendered_lines = 0
-
-    def _title(self) -> str:
-        return "Select default model  [Up/Down] move  [Enter] save  [q] cancel"
-
-    def _rows(self, selected: int) -> list[str]:
-        return [
-            format_model_choice_row(
-                entry,
-                is_selected=index == selected,
-                is_default=entry["name"] == self.default_model,
-            )
-            for index, entry in enumerate(self.registry)
-        ]
-
-    def _rewrite_rows(self, rows: list[str]) -> None:
-        if not self.rendered_lines:
-            print(self._title())
-            print()
-            for line in rows:
-                print(line)
-            self.rendered_lines = len(rows)
-            return
-        print(f"\033[{self.rendered_lines}F", end="")
-        for line in rows:
-            print(f"\r{line}\033[K")
-        self.rendered_lines = len(rows)
-
-
-class VlHelpFormatter(argparse.HelpFormatter):
-    def _format_action(self, action: argparse.Action) -> str:
-        if isinstance(action, argparse._SubParsersAction):
-            choices = grouped_subparser_choices(action)
-            if not choices:
-                return ""
-            action_width = max(18, max(len(command) for command, _ in choices))
-            self._indent()
-            try:
-                return "".join(
-                    self._format_subparser_choice(command, help_text, action_width)
-                    for command, help_text in choices
-                )
-            finally:
-                self._dedent()
-        return super()._format_action(action)
-
-    def _format_subparser_choice(
-        self, command: str, help_text: str | None, action_width: int
-    ) -> str:
-        line = f"{' ' * self._current_indent}{command:<{action_width}}"
-        if not help_text:
-            return f"{line}\n"
-        return f"{line}  {help_text}\n"
-
-
-def grouped_subparser_choices(
-    action: argparse._SubParsersAction,
-) -> list[tuple[str, str | None]]:
-    grouped: list[tuple[list[str], str | None]] = []
-    for choice_action in action._choices_actions:
-        for commands, help_text in grouped:
-            if choice_action.help == help_text:
-                commands.append(choice_action.dest)
-                break
+        if self.workspace:
+            self.update_snapshot()
+        elif self.live:
+            self.live.update(self.table())
+            self.live.stop()
         else:
-            grouped.append(([choice_action.dest], choice_action.help))
-    return [("||".join(commands), help_text) for commands, help_text in grouped]
+            self.console.print(self.table())
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -202,16 +129,35 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         if args.version:
-            print(package_version())
+            output(package_version())
+            return
+
+        if args.command is None and sys.stdin.isatty() and sys.stdout.isatty():
+            from shell_app import ShellApp
+
+            ensure_config_files()
+            ShellApp(get_settings()).run()
             return
 
         command = args.command or "help"
+        titles = {
+            "login": "GitHub login",
+            "logout": "Sign out",
+            "whoami": "Account",
+            "api": "API settings",
+            "stop": "Stop proxy",
+            "quit": "Stop proxy",
+            "update": "Update",
+            "test": "Model connectivity",
+        }
+        if command in titles:
+            heading(titles[command])
         if command in {"api", "start", "model", "models", "test"}:
             ensure_config_files()
         if command == "help":
             parser.print_help()
         elif command == "version":
-            print(package_version())
+            output(package_version())
         elif command == "start":
             start(args)
         elif command in {"stop", "quit"}:
@@ -231,15 +177,17 @@ def main(argv: list[str] | None = None) -> None:
         elif command == "test":
             test_models(args)
     except KeyboardInterrupt as exc:
-        print("\nCancelled.", flush=True)
+        message("Cancelled.", level="warning")
         raise SystemExit(130) from exc
+    except (RuntimeError, ValueError, OSError, httpx.HTTPError) as exc:
+        message(short_error(exc), level="error", stderr=True)
+        raise SystemExit(1) from exc
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = VlArgumentParser(
+        prog="vl",
         description="vela-llm provides local access to GitHub Copilot models.",
-        formatter_class=VlHelpFormatter,
-        usage="%(prog)s [-h] [-v] [command] ...",
     )
     parser.add_argument("-v", "--version", action="store_true", help="Show vl version and exit.")
     subparsers = parser.add_subparsers(dest="command")
@@ -296,7 +244,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     for name in ("model", "models"):
-        subparsers.add_parser(name, help="Interactively change the default model.")
+        models_parser = subparsers.add_parser(name, help="Manage models and context preferences.")
+        models_parser.add_argument(
+            "--fullscreen",
+            action="store_true",
+            help="Use the full-screen workspace (the default; retained for compatibility).",
+        )
 
     return parser
 
@@ -317,8 +270,7 @@ def start(args: argparse.Namespace) -> None:
     if not args.skip_auth_check:
         require_copilot_login()
 
-    if not refresh_model_cache(config_dir):
-        os.environ["VELA_LLM_DISABLE_DYNAMIC_MODELS"] = "1"
+    refresh_model_cache(settings.model_cache_path.parent)
     settings.validate_runtime()
     if not args.no_restart_existing and stop_existing_instance(pid_file):
         wait_for_port_available(settings.host, settings.port)
@@ -331,32 +283,35 @@ def start(args: argparse.Namespace) -> None:
     process = start_server_background(settings, config_dir)
     write_pid_file(pid_file, process.pid)
     log_file = config_dir / "vela-llm.log"
-    if wait_for_port(settings.host, settings.port, process):
-        print(f"Proxy is running in the background (pid {process.pid}).", flush=True)
+    with activity("Waiting for the local proxy…"):
+        ready = wait_for_port(settings.host, settings.port, process)
+    if ready:
+        message(f"Proxy is running in the background (pid {process.pid}).", level="success")
     else:
-        print(
+        message(
             f"Proxy was started in the background (pid {process.pid}), "
             "but the port did not become ready yet.",
-            flush=True,
+            level="warning",
         )
-    print(f"Log file:           {log_file}", flush=True)
+    fields("Process", [("PID", process.pid), ("Log file", log_file)])
 
 
 def update() -> None:
     command = ["uv", "tool", "install", "--force", PYPI_PACKAGE]
-    print("Updating vela-llm to the latest stable PyPI release...", flush=True)
-    print(" ".join(command), flush=True)
+    message("Updating vela-llm to the latest stable PyPI release...", level="info")
+    fields("Install command", [("Run", " ".join(command))])
     if should_print_manual_update_command():
-        print(
+        message(
             "Windows cannot replace a running uv tool environment. "
             "Run the command above after this vl process exits.",
-            flush=True,
+            level="warning",
         )
         raise SystemExit(1)
     try:
         subprocess.run(command, check=True)
+        message("vela-llm update completed.", level="success")
     except subprocess.CalledProcessError as exc:
-        print(f"Update command failed with exit code {exc.returncode}.", flush=True)
+        message(f"Update command failed with exit code {exc.returncode}.", level="error")
         raise SystemExit(exc.returncode) from exc
 
 
@@ -384,31 +339,34 @@ def logout() -> None:
         except FileNotFoundError:
             continue
     if removed:
-        print("GitHub Copilot OAuth credentials removed.", flush=True)
+        message("GitHub Copilot OAuth credentials removed.", level="success")
     else:
-        print("No saved GitHub Copilot OAuth credentials found.", flush=True)
+        message("No saved GitHub Copilot OAuth credentials found.", level="info")
 
 
 def whoami() -> None:
     authenticator = github_copilot_authenticator()
     if not has_access_token(authenticator):
-        print("GitHub Copilot is not authenticated. Run `vl login` first.", flush=True)
+        message("GitHub Copilot is not authenticated. Run `vl login` first.", level="warning")
         raise SystemExit(1)
     try:
-        account = fetch_github_account(authenticator)
+        with activity("Reading GitHub account…"):
+            account = fetch_github_account(authenticator)
     except Exception as exc:
-        print(f"Unable to read GitHub account: {short_error(exc)}", flush=True)
-        print("Run `vl login` to authenticate again.", flush=True)
+        message(f"Unable to read GitHub account: {short_error(exc)}", level="error")
+        message("Run `vl login` to authenticate again.", level="info")
         raise SystemExit(1) from exc
 
     login = account.get("login")
     user_id = account.get("id")
-    if login:
-        print(f"GitHub Login:       {login}", flush=True)
-    if user_id is not None:
-        print(f"GitHub User ID:     {user_id}", flush=True)
     if not login and user_id is None:
         raise RuntimeError("GitHub user response did not include login or id.")
+    rows = []
+    if login:
+        rows.append(("GitHub Login:", login))
+    if user_id is not None:
+        rows.append(("GitHub User ID:", user_id))
+    fields("Authenticated account", rows)
 
 
 def api(*, show_key: bool = False) -> None:
@@ -440,12 +398,13 @@ def test_models(args: argparse.Namespace) -> None:
 
     register_litellm_model_metadata(litellm, registry)
 
-    print("Testing configured models...", flush=True)
+    message("Testing configured models...", level="info")
     results = test_model_entries_parallel(litellm, registry, timeout=args.timeout)
     failures = sum(1 for result in results if result.error is not None)
     if failures:
+        message(f"{failures}/{len(results)} model checks failed.", level="error")
         raise SystemExit(1)
-    print("All configured models are reachable.", flush=True)
+    message("All configured models are reachable.", level="success")
 
 
 def test_model_entries_parallel(
@@ -495,67 +454,6 @@ def elapsed_ms_since(start: float) -> float:
 
 def format_ping(ping_ms: float) -> str:
     return f"{ping_ms:.0f}ms"
-
-
-def format_model_test_header(*, model_width: int = MODEL_TEST_MODEL_WIDTH) -> str:
-    return format_model_test_row("STATUS", "MODEL", "PING", model_width=model_width)
-
-
-def format_model_test_pending(
-    entry: dict[str, str], *, model_width: int = MODEL_TEST_MODEL_WIDTH
-) -> str:
-    return format_model_test_row(
-        "RUN",
-        format_model_test_name(entry),
-        "...",
-        model_width=model_width,
-    )
-
-
-def format_model_test_result(
-    result: ModelTestResult,
-    *,
-    colorize: bool = True,
-    model_width: int = MODEL_TEST_MODEL_WIDTH,
-) -> str:
-    entry = result.entry
-    ping = format_ping(result.ping_ms)
-    if result.error is None:
-        status = green("PASS") if colorize else "PASS"
-        return format_model_test_row(
-            status,
-            format_model_test_name(entry),
-            ping,
-            model_width=model_width,
-        )
-    status = red("Fail") if colorize else "Fail"
-    return (
-        format_model_test_row(status, format_model_test_name(entry), ping, model_width=model_width)
-        + f"  {short_error(result.error)}"
-    )
-
-
-def format_model_test_name(entry: dict[str, str]) -> str:
-    return entry["name"]
-
-
-def format_model_test_row(
-    status: str, model: str, ping: str, *, model_width: int = MODEL_TEST_MODEL_WIDTH
-) -> str:
-    return (
-        f"{pad_visible(status, MODEL_TEST_STATUS_WIDTH)}{MODEL_TEST_COLUMN_GAP}"
-        f"{pad_visible(model, model_width)}{MODEL_TEST_COLUMN_GAP}"
-        f"{ping}"
-    )
-
-
-def pad_visible(text: str, width: int) -> str:
-    return f"{text}{' ' * max(0, width - visible_length(text))}"
-
-
-def visible_length(text: str) -> int:
-    plain_text = text.replace("\033[32m", "").replace("\033[31m", "").replace("\033[0m", "")
-    return len(plain_text)
 
 
 def test_model_entry_with_retry(litellm, entry: dict[str, str], *, timeout: float) -> None:
@@ -610,7 +508,7 @@ def stop() -> None:
     pid_file = active_config_dir() / ".vela-llm.pid"
     pid = read_pid_file(pid_file)
     if pid is None:
-        print("No running vela-llm instance was recorded.")
+        message("No running vela-llm instance was recorded.", level="info")
         return
     stop_existing_instance(pid_file)
 
@@ -694,89 +592,63 @@ def is_port_open(host: str, port: int) -> bool:
 
 
 def handle_models(args: argparse.Namespace) -> None:
-    select_model_interactively()
+    from model_menu import print_model_snapshot
+    from shell_app import ShellApp
 
-
-def set_default_model(name: str) -> None:
     settings = get_settings()
-    models_path = resolve_config_path(settings.models_config)
-    registry = settings.model_registry()
-    names = {entry["name"] for entry in registry}
-    if name not in names:
-        msg = f"Unknown model '{name}'. Run `vl models` to see configured models."
-        raise RuntimeError(msg)
-    write_default_model(models_path, name)
-    get_settings.cache_clear()
-    print(f"Default model set to {green(name)}.")
-
-
-def select_model_interactively() -> None:
-    settings = get_settings()
-    registry = settings.model_registry()
-    if not registry:
-        raise RuntimeError("No models configured.")
-
-    selected = next(
-        (index for index, entry in enumerate(registry) if entry["name"] == settings.default_model),
-        0,
-    )
-    if not sys.stdin.isatty():
-        print_model_choices(registry, settings.default_model)
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print_model_snapshot(settings)
         return
-
-    view = ModelSelectionView(registry, settings.default_model)
-    while True:
-        view.render(selected)
-        key = read_key()
-        if key == "up":
-            selected = (selected - 1) % len(registry)
-        elif key == "down":
-            selected = (selected + 1) % len(registry)
-        elif key == "enter":
-            view.finish()
-            set_default_model(registry[selected]["name"])
-            return
-        elif key in {"q", "ctrl_c"}:
-            view.finish()
-            print("Cancelled.")
-            return
-
-
-def print_model_choices(registry: list[dict[str, str]], default_model: str) -> None:
-    selected = next(
-        (index for index, entry in enumerate(registry) if entry["name"] == default_model),
-        0,
-    )
-    ModelSelectionView(registry, default_model).render(selected)
+    ShellApp(settings, initial_page="models").run()
 
 
 def ensure_copilot_authenticated() -> None:
     apply_github_copilot_oauth_patch()
 
-    print("Checking GitHub Copilot OAuth credentials...", flush=True)
-    print(
+    message("Checking GitHub Copilot OAuth credentials...", level="info")
+    output(
         "If this machine is not authenticated yet, follow the GitHub device link "
         "and enter the code printed below.",
-        flush=True,
     )
-    github_copilot_authenticator().get_api_key()
-    print("GitHub Copilot OAuth credentials are ready.", flush=True)
+    authenticator = github_copilot_authenticator()
+
+    def device_login():
+        info = authenticator._get_device_code()
+        fields(
+            "Authorize this device",
+            [
+                ("Open in browser", info["verification_uri"]),
+                ("Device code", Text(info["user_code"], style="bold #70dfdf")),
+            ],
+        )
+        message("Enter the code in your browser. Ctrl+C cancels.")
+        with activity("Waiting for GitHub authorization…"):
+            return authenticator._poll_for_access_token(info["device_code"])
+
+    # Scope presentation to this explicit CLI login; keep upstream retries and storage.
+    authenticator._login = device_login
+    try:
+        authenticator.get_api_key()
+    except Exception as exc:
+        raise RuntimeError(f"GitHub login failed: {short_error(exc)}") from exc
+    message("GitHub Copilot OAuth credentials are ready.", level="success")
 
 
 def require_copilot_login() -> None:
     apply_github_copilot_oauth_patch()
     authenticator = github_copilot_authenticator()
     if not has_valid_api_key(authenticator) and not has_access_token(authenticator):
-        print("GitHub Copilot is not authenticated. Run `vl login` first.", flush=True)
+        message("GitHub Copilot is not authenticated. Run `vl login` first.", level="warning")
         raise SystemExit(1)
     try:
-        authenticator.get_api_key()
+        with activity("Checking GitHub Copilot credentials…"):
+            authenticator.get_api_key()
     except Exception as exc:
-        print(
+        message(
             f"GitHub Copilot credentials are invalid or expired: {short_error(exc)}",
-            flush=True,
+            level="error",
         )
-        print("Run `vl login` to authenticate again.", flush=True)
+        message("Run `vl login` to authenticate again.", level="info")
         raise SystemExit(1) from exc
 
 
@@ -835,18 +707,18 @@ def stop_existing_instance(pid_file: Path) -> bool:
     current_start_token = process_start_token(pid)
     if record.start_token is None or current_start_token != record.start_token:
         cleanup_pid_file(pid_file)
-        print(
+        message(
             f"Ignored stale vela-llm PID record for pid {pid}; no process was stopped.",
-            flush=True,
+            level="warning",
         )
         return False
 
-    print(f"Stopping previous vela-llm instance (pid {pid})...", flush=True)
+    message(f"Stopping previous vela-llm instance (pid {pid})...", level="info")
     terminate_process(pid)
     for _ in range(50):
         if not is_process_running(pid):
             cleanup_pid_file(pid_file)
-            print("Previous vela-llm instance stopped.", flush=True)
+            message("Previous vela-llm instance stopped.", level="success")
             return True
         time.sleep(0.1)
 
@@ -1027,19 +899,27 @@ def is_port_available(host: str, port: int) -> bool:
 
 def print_startup_info(settings) -> None:
     root_base_url, openai_base_url = local_api_urls(settings)
-
-    print("", flush=True)
-    print(
-        render_startup_banner(color=supports_color(), width=shutil.get_terminal_size().columns),
-        flush=True,
+    console = make_console()
+    console.print()
+    if os.environ.get("VELA_LLM_WORKSPACE_COMMAND") != "1":
+        console.print(
+            Text.from_ansi(
+                render_startup_banner(
+                    color=supports_color(), width=shutil.get_terminal_size().columns
+                )
+            )
+        )
+    heading("Start proxy", "vela-llm is starting...", console=console)
+    fields(
+        "Local endpoints",
+        [
+            ("OpenAI Base URL:", openai_base_url),
+            ("Anthropic Base URL:", root_base_url),
+            ("API Key:", mask_api_key(settings.local_api_key)),
+            ("Default model:", settings.default_model),
+        ],
+        console=console,
     )
-    print("", flush=True)
-    print("vela-llm is starting...", flush=True)
-    print(f"OpenAI Base URL:    {openai_base_url}", flush=True)
-    print(f"Anthropic Base URL: {root_base_url}", flush=True)
-    print(f"API Key:            {mask_api_key(settings.local_api_key)}", flush=True)
-    print(f"Default model:      {settings.default_model}", flush=True)
-    print("", flush=True)
 
 
 def refresh_model_cache(config_dir: Path) -> bool:
@@ -1047,15 +927,16 @@ def refresh_model_cache(config_dir: Path) -> bool:
 
     cache_path = config_dir / "models-cache.json"
     try:
-        registry = refresh(cache_path)
+        with activity("Refreshing model catalog…"):
+            registry = refresh(cache_path)
     except Exception as exc:
         fallback = "cached metadata" if cache_path.exists() else "the configured default model"
-        print(
-            f"Model metadata:     refresh failed ({short_error(exc)}); using {fallback}.",
-            flush=True,
+        message(
+            f"Model metadata: refresh failed ({short_error(exc)}); using {fallback}.",
+            level="warning",
         )
         return False
-    print(f"Model metadata:     refreshed {len(registry)} models", flush=True)
+    message(f"Model metadata:     refreshed {len(registry)} models", level="success")
     return True
 
 
@@ -1063,13 +944,10 @@ def print_api_info(settings, *, show_key: bool = False) -> None:
     root_base_url, openai_base_url = local_api_urls(settings)
     api_key = settings.local_api_key if show_key else mask_api_key(settings.local_api_key)
 
-    print("OpenAI Compatible:", flush=True)
-    print(f"API Key:  {api_key}", flush=True)
-    print(f"Base URL: {openai_base_url}", flush=True)
-    print("", flush=True)
-    print("Anthropic Compatible:", flush=True)
-    print(f"API Key:  {api_key}", flush=True)
-    print(f"Base URL: {root_base_url}", flush=True)
+    fields("OpenAI Compatible:", [("Base URL:", openai_base_url), ("API Key:", api_key)])
+    fields("Anthropic Compatible:", [("Base URL:", root_base_url), ("API Key:", api_key)])
+    if not show_key:
+        output("Use vl api --show-key to reveal the complete local key.", style="vela.muted")
 
 
 def mask_api_key(api_key: str) -> str:
@@ -1093,32 +971,6 @@ def local_api_display_host(host: str) -> str:
     return host
 
 
-def format_model_choice_row(entry: dict[str, str], *, is_selected: bool, is_default: bool) -> str:
-    current = green(">") if is_selected else " "
-    model = entry["name"]
-    if is_selected:
-        model = green(model)
-    tags = []
-    if is_default:
-        tags.append(green("default"))
-    if entry.get("mode") == "responses":
-        tags.append("responses")
-    suffix = f"  ({', '.join(tags)})" if tags else ""
-    return f"{current} {model}{suffix}"
-
-
-def green(text: str) -> str:
-    if not supports_color():
-        return text
-    return f"\033[32m{text}\033[0m"
-
-
-def red(text: str) -> str:
-    if not supports_color():
-        return text
-    return f"\033[31m{text}\033[0m"
-
-
 def package_version() -> str:
     try:
         return version("vela-llm")
@@ -1128,53 +980,6 @@ def package_version() -> str:
 
 def supports_color() -> bool:
     return sys.stdout.isatty() and not os.getenv("NO_COLOR")
-
-
-def clear_screen() -> None:
-    if supports_color():
-        print("\033[2J\033[H", end="")
-    else:
-        print("\n" * 2)
-
-
-def read_key() -> str:
-    if sys.platform == "win32":
-        import msvcrt
-
-        char = msvcrt.getch()
-        if char in {b"\x00", b"\xe0"}:
-            second = msvcrt.getch()
-            if second == b"H":
-                return "up"
-            if second == b"P":
-                return "down"
-        if char == b"\r":
-            return "enter"
-        if char == b"\x03":
-            return "ctrl_c"
-        return char.decode(errors="ignore").lower()
-
-    import termios
-    import tty
-
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        char = sys.stdin.read(1)
-        if char == "\x1b":
-            sequence = sys.stdin.read(2)
-            if sequence == "[A":
-                return "up"
-            if sequence == "[B":
-                return "down"
-        if char in {"\r", "\n"}:
-            return "enter"
-        if char == "\x03":
-            return "ctrl_c"
-        return char.lower()
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 if __name__ == "__main__":

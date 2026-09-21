@@ -120,7 +120,7 @@ def test_cached_model_metadata_takes_precedence(monkeypatch, tmp_path) -> None:
     )
     settings = Settings(LOCAL_API_KEY="sk-test", VELA_LLM_MODELS_CONFIG=config)
 
-    assert settings.model_registry() == [
+    assert settings.raw_model_registry() == [
         {
             "name": "gpt-cached",
             "upstream": "github_copilot/gpt-cached",

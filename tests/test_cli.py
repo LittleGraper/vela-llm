@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import threading
 from contextlib import suppress
 
 import cli
 import github_copilot_models
 from settings import Settings, get_settings
+from shell_app import ShellApp
 
 
 def fake_dynamic_model_registry(_: Settings) -> list[dict[str, str]]:
@@ -66,7 +68,9 @@ def prepare_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("VELA_LLM_HOST", "127.0.0.1")
     monkeypatch.setenv("VELA_LLM_PORT", "4321")
     monkeypatch.setenv("VELA_LLM_MODELS_CONFIG", "models.toml")
-    monkeypatch.setattr(Settings, "dynamic_model_registry", fake_dynamic_model_registry)
+    (tmp_path / "models-cache.json").write_text(
+        json.dumps({"models": fake_dynamic_model_registry(None)}), encoding="utf-8"
+    )
     monkeypatch.setattr(cli, "refresh_model_cache", lambda config_dir: None)
     monkeypatch.chdir(tmp_path)
     get_settings.cache_clear()
@@ -104,8 +108,8 @@ def test_vl_help_groups_duplicate_commands_and_hides_choices(monkeypatch, tmp_pa
 
     output = capsys.readouterr().out
     assert "{help,version,login" not in output
-    assert "stop||quit          Stop the running proxy instance." in output
-    assert "model||models       Interactively change the default model." in output
+    assert "stop / quit" in output and "Stop the running proxy instance." in output
+    assert "model / models" in output and "Manage models and context preferences." in output
     assert "    stop            Stop the running proxy instance." not in output
     assert "    quit            Stop the running proxy instance." not in output
 
@@ -189,8 +193,8 @@ def test_vl_whoami_prints_current_github_account(monkeypatch, tmp_path, capsys) 
     cli.main(["whoami"])
 
     output = capsys.readouterr().out
-    assert "GitHub Login:       octocat" in output
-    assert "GitHub User ID:     12345" in output
+    assert "GitHub Login:" in output and "octocat" in output
+    assert "GitHub User ID:" in output and "12345" in output
     assert calls == [
         {
             "url": "https://api.github.com/user",
@@ -233,11 +237,11 @@ def test_vl_api_prints_openai_and_anthropic_settings(monkeypatch, tmp_path, caps
 
     output = capsys.readouterr().out
     assert "OpenAI Compatible:" in output
-    assert "API Key:  sk-...test" in output
+    assert "API Key:" in output and "sk-...test" in output
     assert "sk-local-test" not in output
-    assert "Base URL: http://127.0.0.1:4321/v1" in output
+    assert "Base URL:" in output and "http://127.0.0.1:4321/v1" in output
     assert "Anthropic Compatible:" in output
-    assert "Base URL: http://127.0.0.1:4321" in output
+    assert "Base URL:" in output and "http://127.0.0.1:4321" in output
 
 
 def test_vl_api_show_key_prints_complete_key(monkeypatch, tmp_path, capsys) -> None:
@@ -245,7 +249,7 @@ def test_vl_api_show_key_prints_complete_key(monkeypatch, tmp_path, capsys) -> N
 
     cli.main(["api", "--show-key"])
 
-    assert "API Key:  sk-local-test" in capsys.readouterr().out
+    assert "sk-local-test" in capsys.readouterr().out
 
 
 def test_vl_logout_removes_saved_copilot_credentials(monkeypatch, tmp_path, capsys) -> None:
@@ -329,7 +333,7 @@ def test_vl_update_prints_manual_command_for_windows_uv_tool(monkeypatch, tmp_pa
 
     output = capsys.readouterr().out
     assert "uv tool install --force vela-llm" in output
-    assert "Run the command above after this vl process exits" in output
+    assert "Run the command above after this vl process exits" in " ".join(output.split())
 
 
 class FakeProcess:
@@ -361,13 +365,13 @@ def test_vl_start_prints_urls_key_and_starts_background_server(
 
     output = capsys.readouterr().out
     assert auth_calls == [True]
-    assert "OpenAI Base URL:    http://127.0.0.1:4321/v1" in output
-    assert "Anthropic Base URL: http://127.0.0.1:4321" in output
-    assert "API Key:            sk-...test" in output
+    assert "OpenAI Base URL:" in output and "http://127.0.0.1:4321/v1" in output
+    assert "Anthropic Base URL:" in output and "http://127.0.0.1:4321" in output
+    assert "API Key:" in output and "sk-...test" in output
     assert "sk-local-test" not in output
-    assert "Default model:      gpt-4" in output
+    assert "Default model:" in output and "gpt-4" in output
     assert "Proxy is running in the background (pid 98765)." in output
-    assert f"Log file:           {tmp_path / 'vela-llm.log'}" in output
+    assert "Log file" in output and "vela-llm.log" in output
     assert pid_writes == [(str(tmp_path / ".vela-llm.pid"), 98765)]
 
 
@@ -420,7 +424,7 @@ def test_vl_start_continues_offline_without_retrying_dynamic_models(monkeypatch,
     cli.main(["start"])
 
     assert launches == [True]
-    assert cli.os.environ["VELA_LLM_DISABLE_DYNAMIC_MODELS"] == "1"
+    assert "VELA_LLM_DISABLE_DYNAMIC_MODELS" not in cli.os.environ
 
 
 def test_refresh_model_cache_uses_existing_cache_on_network_failure(
@@ -435,7 +439,7 @@ def test_refresh_model_cache_uses_existing_cache_on_network_failure(
     monkeypatch.setattr(github_copilot_models, "refresh_model_cache", fail_refresh)
 
     assert not cli.refresh_model_cache(tmp_path)
-    assert "using cached metadata" in capsys.readouterr().out
+    assert "using cached metadata" in " ".join(capsys.readouterr().out.split())
 
 
 def test_vl_start_foreground_runs_uvicorn_in_current_process(monkeypatch, tmp_path) -> None:
@@ -584,10 +588,9 @@ def test_vl_test_checks_configured_models(monkeypatch, tmp_path, capsys) -> None
     }
     output = capsys.readouterr().out
     assert "TEST " not in output
-    assert "STATUS\tMODEL  \tPING" in output
-    assert "RUN   \tgpt-4" in output
-    assert "RUN   \tgpt-5.5" in output
-    assert "PASS  \tgpt-4" in output
+    assert all(label in output for label in ("STATUS", "MODEL", "PING", "RUN", "PASS"))
+    assert "gpt-4" in output and "gpt-5.5" in output
+    assert "\t" not in output and "\033" not in output
     assert "github_copilot/gpt-4" not in output
     assert "ms" in output
     assert "All configured models are reachable." in output
@@ -697,7 +700,7 @@ def test_vl_test_exits_nonzero_on_model_failure(monkeypatch, tmp_path, capsys) -
         raise AssertionError("vl test should exit non-zero when a model fails")
 
     output = capsys.readouterr().out
-    assert "Fail  \tgpt-5.5" in output
+    assert "Fail" in output and "gpt-5.5" in output
     assert "boom" in output
 
 
@@ -761,15 +764,21 @@ def test_vl_test_colorizes_ok_and_fail(monkeypatch, tmp_path, capsys) -> None:
             return object()
 
     monkeypatch.setattr(cli, "require_copilot_login", lambda: None)
-    monkeypatch.setattr(cli, "supports_color", lambda: True)
+    from rich.console import Console
+
+    monkeypatch.setattr(
+        cli,
+        "make_console",
+        lambda **kwargs: Console(force_terminal=True, color_system="standard", no_color=False),
+    )
     monkeypatch.setitem(cli.sys.modules, "litellm", FakeLiteLLM)
 
     with suppress(SystemExit):
         cli.main(["test"])
 
     output = capsys.readouterr().out
-    assert "\033[32mPASS\033[0m" in output
-    assert "\033[31mFail\033[0m" in output
+    assert "\033[32mPASS" in output
+    assert "\033[31mFail" in output
 
 
 def test_vl_test_handles_keyboard_interrupt_cleanly(monkeypatch, tmp_path, capsys) -> None:
@@ -810,10 +819,11 @@ def test_vl_model_non_interactive_prints_choices(monkeypatch, tmp_path, capsys) 
     cli.main(["models"])
 
     output = capsys.readouterr().out
-    assert "Select default model  [Up/Down] move  [Enter] save  [q] cancel" in output
-    assert "> gpt-4  (default)" in output
+    assert "VELA / Models" in output
+    assert "gpt-4 (default)" in output
+    assert "\033" not in output
     assert "  gpt-5.5" in output
-    assert "  codex  (responses)" in output
+    assert "  codex" in output
     assert "CUR" not in output
     assert "github_copilot/gpt-4" not in output
 
@@ -829,34 +839,17 @@ def test_vl_model_does_not_accept_list_subcommand(monkeypatch, tmp_path) -> None
         raise AssertionError("models list should not be accepted")
 
 
-def test_vl_model_interactive_uses_arrow_enter(monkeypatch, tmp_path) -> None:
+def test_vl_model_launches_textual(monkeypatch, tmp_path) -> None:
     prepare_config(monkeypatch, tmp_path)
     monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cli, "supports_color", lambda: False)
-    keys = iter(["down", "enter"])
-    monkeypatch.setattr(cli, "read_key", lambda: next(keys))
-
+    monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+    runs = []
+    monkeypatch.setattr(ShellApp, "run", lambda self, **kwargs: runs.append(self.initial_page))
+    before = (tmp_path / "models.toml").read_bytes()
     cli.main(["model"])
-
-    assert 'default = "gpt-5.5"' in (tmp_path / "models.toml").read_text(encoding="utf-8")
-
-
-def test_model_selection_redraws_only_choice_rows(monkeypatch, capsys) -> None:
-    registry = [
-        {"name": "gpt-4", "mode": "chat"},
-        {"name": "codex", "mode": "responses"},
-    ]
-    monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(cli, "supports_color", lambda: False)
-    view = cli.ModelSelectionView(registry, "gpt-4")
-
-    view.render(0)
-    view.render(1)
-
-    output = capsys.readouterr().out
-    assert output.count("Select default model") == 1
-    assert "\033[2F" in output
-    assert "\033[4F" not in output
+    cli.main(["models", "--fullscreen"])
+    assert runs == ["models", "models"]
+    assert (tmp_path / "models.toml").read_bytes() == before
 
 
 def test_stop_existing_instance_terminates_recorded_process(monkeypatch, tmp_path) -> None:
