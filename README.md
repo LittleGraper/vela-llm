@@ -65,8 +65,12 @@ outside the command input to reveal or hide it; leaving the page masks it again.
 Esc returns one level; command results return to the homepage.
 Only on the homepage, press Esc twice within 3 seconds to exit. The first press shows an inline hint below
 the input without changing the page or focus. Any other key, click, paste, or timeout
-cancels confirmation. Ctrl+C returns to the homepage and shows the same hint; press Esc to confirm. Closing the workspace leaves the background proxy running;
-use `/stop` to stop it. Exiting the workspace cancels the current command. Only one external command runs
+cancels confirmation. Ctrl+C returns to the homepage and shows the same hint; press Esc to confirm.
+Exiting through this confirmation leaves the background proxy running; use `/stop` to stop it.
+On Windows, closing the terminal while the workspace is running, or forcibly terminating the workspace,
+automatically terminates commands and proxy processes started by that workspace. Proxies started by
+another workspace or a standalone `vl start` are unaffected. This terminal-close cleanup is Windows-only;
+on other systems, use `/stop` explicitly. Exiting the workspace cancels the current command. Only one external command runs
 at a time, and device-login codes appear immediately while authorization is pending.
 `/start` runs the proxy in the background; use `vl start --foreground` outside the workspace
 for foreground operation.
