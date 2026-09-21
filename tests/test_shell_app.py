@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import socket
+import subprocess
 import sys
 from io import StringIO
+from unittest.mock import Mock
 
+import httpx
 import pytest
 from rich.console import Console
 from test_model_context import configured as configured
@@ -168,6 +172,98 @@ async def test_ctrl_c_uses_inline_esc_confirmation(configured):
         assert app.screen is app.result_screen
         await pilot.press("escape")
         assert not app.is_running
+
+
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_only_confirmed_exit_releases_background_processes(configured, confirmed):
+    settings, _ = configured
+    app = ShellApp(settings, refresh_on_start=False)
+    job = Mock()
+    app.process_job = job
+    async with app.run_test() as pilot:
+        await pilot.press("escape")
+        job.release.assert_not_called()
+        job.close.assert_not_called()
+        if confirmed:
+            await pilot.press("escape")
+        else:
+            app.exit()  # Unexpected teardown must keep kill-on-close enabled.
+    if confirmed:
+        job.release.assert_called_once_with()
+    else:
+        job.release.assert_not_called()
+    job.close.assert_called_once_with()
+
+
+async def test_failed_job_release_does_not_exit(configured):
+    settings, _ = configured
+    app = ShellApp(settings, refresh_on_start=False)
+    job = Mock()
+    job.release.side_effect = OSError("Cannot change job limits")
+    app.process_job = job
+    async with app.run_test() as pilot:
+        await pilot.press("escape", "escape")
+        assert app.is_running and not app.exit_pending
+        job.release.assert_called_once_with()
+        job.close.assert_not_called()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows terminal cleanup")
+@pytest.mark.parametrize("confirmed", [True, False])
+async def test_real_background_proxy_lifetime(configured, monkeypatch, confirmed):
+    settings, path = configured
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    monkeypatch.setenv("VELA_LLM_PORT", str(port))
+    real_spawn = asyncio.create_subprocess_exec
+
+    async def spawn(*args, **kwargs):
+        # Exercise the real proxy launch without refreshing models or touching auth.
+        return await real_spawn(
+            args[0],
+            "-u",
+            "-c",
+            "from process_lifetime import join_workspace_job; join_workspace_job(); "
+            "from cli import start_server_background, wait_for_port, write_pid_file; "
+            "from settings import get_settings; from pathlib import Path; import sys; "
+            "s=get_settings(); root=Path(sys.argv[1]); "
+            "p=start_server_background(s, root); write_pid_file(root / '.vela-llm.pid', p.pid); "
+            "assert wait_for_port(s.host, s.port, p); print('PROXY READY', flush=True)",
+            str(path.parent),
+            **kwargs,
+        )
+
+    monkeypatch.setattr(shell_app.asyncio, "create_subprocess_exec", spawn)
+    app = ShellApp(settings, refresh_on_start=False)
+    try:
+        async with app.run_test() as pilot:
+            await app.submit_command("/start")
+            await wait_done(app)
+            assert "PROXY READY" in app.result_text
+            async with httpx.AsyncClient(trust_env=False) as client:
+                response = await client.get(f"http://127.0.0.1:{port}/healthz")
+                assert response.json()["status"] == "ok"
+            if confirmed:
+                await pilot.press("escape", "escape", "escape")
+            else:
+                app.exit()
+        async with httpx.AsyncClient(trust_env=False) as client:
+            if confirmed:
+                response = await client.get(f"http://127.0.0.1:{port}/healthz")
+                assert response.json()["status"] == "ok"
+            else:
+                with pytest.raises(httpx.ConnectError):
+                    await client.get(f"http://127.0.0.1:{port}/healthz")
+    finally:
+        # Uses the isolated record's process identity; never the user's proxy.
+        record = cli.read_pid_record(path.parent / ".vela-llm.pid")
+        if record and cli.process_start_token(record.pid) == record.start_token:
+            subprocess.run(
+                ["taskkill", "/PID", str(record.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=10,
+            )
 
 
 @pytest.mark.parametrize("leave", ["escape", "/models"])

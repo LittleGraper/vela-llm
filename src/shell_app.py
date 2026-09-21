@@ -26,6 +26,7 @@ from textual.widgets import DataTable, Input, OptionList, Static
 from api_screen import ApiScreen
 from banner import render_startup_banner
 from model_app import ModelApp
+from process_lifetime import WORKSPACE_JOB_ENV, WorkspaceJobs, command_python
 from workspace_output import CommandOutput
 from workspace_screen import WorkspaceScreen
 
@@ -326,6 +327,7 @@ class ShellApp(ModelApp, inherit_bindings=False):
         self.showing_directory = True
         self.exit_deadline = 0.0
         self.exit_timer: Timer | None = None
+        self.process_job: WorkspaceJobs | None = None
 
     def on_mount(self, event: Mount) -> None:
         event.prevent_default()
@@ -338,6 +340,10 @@ class ShellApp(ModelApp, inherit_bindings=False):
     def action_back(self) -> None:
         # Existing model pages route Esc here; subpages go back without arming exit.
         self.action_request_exit()
+
+    def on_unmount(self) -> None:
+        if self.process_job is not None:
+            self.process_job.close()
 
     @property
     def is_home(self) -> bool:
@@ -404,6 +410,13 @@ class ShellApp(ModelApp, inherit_bindings=False):
         if not self.is_home:
             self.action_previous_page()
         elif self.exit_pending:
+            if self.process_job is not None:
+                try:
+                    self.process_job.release()
+                except OSError as exc:
+                    self.cancel_exit()
+                    self.notify(f"Unable to keep the proxy running: {exc}", severity="error")
+                    return
             self.exit()
         else:
             self.action_arm_exit()
@@ -505,6 +518,11 @@ class ShellApp(ModelApp, inherit_bindings=False):
         name = args[0]
         try:
             env = os.environ.copy()
+            env.pop(WORKSPACE_JOB_ENV, None)
+            if sys.platform == "win32":
+                if self.process_job is None:
+                    self.process_job = WorkspaceJobs()
+                env[WORKSPACE_JOB_ENV] = self.process_job.new_command()
             env.update(
                 PYTHONIOENCODING="utf-8",
                 NO_COLOR="1",
@@ -513,9 +531,10 @@ class ShellApp(ModelApp, inherit_bindings=False):
                 VELA_LLM_WORKSPACE_COMMAND="1",
             )
             self.process = await asyncio.create_subprocess_exec(
-                sys.executable,
+                command_python(env),
                 "-u",
                 "-c",
+                "from process_lifetime import join_workspace_job; join_workspace_job(); "
                 "from cli import main; main()",
                 *args,
                 stdin=asyncio.subprocess.DEVNULL,
@@ -547,5 +566,9 @@ class ShellApp(ModelApp, inherit_bindings=False):
                     self.process.terminate()
                 await self.process.wait()
             self.process = None
+            if self.process_job is not None:
+                # Retain jobs with background descendants; completed commands need no handle.
+                with suppress(OSError):
+                    self.process_job.finish_command()
             self.busy = False
             self.manager.reload()
