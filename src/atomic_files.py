@@ -7,14 +7,14 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
-def atomic_write(path: Path, contents: str) -> None:
+def atomic_write(path: Path, contents: str | bytes) -> None:
     """Readers see either the complete old file or the complete new file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(contents)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(contents.encode("utf-8") if isinstance(contents, str) else contents)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)

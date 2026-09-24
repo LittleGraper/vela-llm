@@ -148,11 +148,13 @@ class ChoiceScreen(WorkspaceScreen):
 
     def save(self, name: str, mode: str, size: int | None = None) -> None:
         try:
-            self.app.manager.save_context(name, mode, size)
+            results = self.app.manager.save_context(name, mode, size)
         except (OSError, ValueError) as exc:
             self.show_error(exc)
         else:
             self.app.notice = f"Saved {name}: {mode.title()}"
+            if results:
+                self.app.notice += "\n" + " · ".join(results)
             self.app.return_to_models()
 
 
@@ -290,11 +292,13 @@ class UnavailableDetailScreen(ChoiceScreen):
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         try:
-            self.app.manager.delete_context(self.model_name)
+            results = self.app.manager.delete_context(self.model_name)
         except (OSError, ValueError) as exc:
             self.show_error(exc)
         else:
             self.app.notice = f"Deleted saved context: {self.model_name}"
+            if results:
+                self.app.notice += "\n" + " · ".join(results)
             self.app.return_to_models()
 
 
@@ -378,7 +382,10 @@ class ModelApp(App, inherit_bindings=False):
 
         def fetch() -> None:
             try:
-                result.set_result(refresh_model_cache(path))
+                from client_config import sync_clients_after_refresh
+
+                refresh_model_cache(path)
+                result.set_result(sync_clients_after_refresh(self.manager.settings))
             except Exception as exc:
                 result.set_exception(exc)
 
@@ -386,11 +393,13 @@ class ModelApp(App, inherit_bindings=False):
         try:
             while not result.done():
                 await asyncio.sleep(0.05)
-            result.result()
+            sync_results = result.result()
         except Exception as exc:
             self.notice = f"Refresh failed: {' '.join(str(exc).split())[:180]}"
         else:
             self.notice = "Catalog refreshed."
+            if sync_results:
+                self.notice += "\n" + " · ".join(sync_results)
         finally:
             self.refreshing = False
         if self.screen is self.models_screen:

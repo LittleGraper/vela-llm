@@ -937,6 +937,12 @@ def refresh_model_cache(config_dir: Path) -> bool:
         )
         return False
     message(f"Model metadata:     refreshed {len(registry)} models", level="success")
+    from client_config import sync_clients_after_refresh
+
+    settings = get_settings()
+    if settings.model_cache_path == cache_path:
+        for result in sync_clients_after_refresh(settings):
+            message(result, level="success" if result.endswith("models synced") else "warning")
     return True
 
 

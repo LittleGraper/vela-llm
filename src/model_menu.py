@@ -64,11 +64,12 @@ class ModelManager:
         write_default_model(resolve_config_path(self.settings.models_config), name)
         self.reload()
 
-    def delete_context(self, name: str) -> None:
+    def delete_context(self, name: str) -> list[str]:
         write_context(resolve_config_path(self.settings.models_config), name, "auto")
         self.reload()
+        return self.sync_clients()
 
-    def save_context(self, name: str, mode: str, size: int | None = None) -> None:
+    def save_context(self, name: str, mode: str, size: int | None = None) -> list[str]:
         # Re-read the latest successful catalog, including refreshes by another CLI.
         latest = load_catalog(self.settings.model_cache_path).get("models", [])
         entry = next((e for e in latest if e["name"] == name), None)
@@ -80,6 +81,15 @@ class ModelManager:
             raise ValueError("Upstream maximum is Unknown; cannot save Maximum.")
         write_context(resolve_config_path(self.settings.models_config), name, mode, size)
         self.reload()
+        return self.sync_clients()
+
+    def sync_clients(self) -> list[str]:
+        from client_config import sync_clients_after_refresh
+
+        results = sync_clients_after_refresh(self.settings)
+        if any("models synced" in result for result in results):
+            results.append("Restart Codex/DSH/Kimi to use the updated context.")
+        return results
 
 
 def model_cells(manager: ModelManager, entry: dict) -> tuple[Text, ...]:
