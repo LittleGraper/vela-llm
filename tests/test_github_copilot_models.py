@@ -22,9 +22,11 @@ def test_fetch_available_models_maps_supported_endpoints(monkeypatch) -> None:
                 "data": [
                     {
                         "id": "gpt-chat",
+                        "name": " GPT Chat ",
                         "model_picker_enabled": True,
                         "supported_endpoints": ["/chat/completions"],
                         "capabilities": {
+                            "supports": {"vision": True, "reasoning_effort": ["low", "medium"]},
                             "limits": {
                                 "max_context_window_tokens": 400000,
                                 "max_prompt_tokens": 272000,
@@ -34,6 +36,7 @@ def test_fetch_available_models_maps_supported_endpoints(monkeypatch) -> None:
                     },
                     {
                         "id": "gpt-responses",
+                        "name": " ",
                         "model_picker_enabled": True,
                         "supported_endpoints": ["/responses"],
                     },
@@ -59,11 +62,13 @@ def test_fetch_available_models_maps_supported_endpoints(monkeypatch) -> None:
     assert github_copilot_models.fetch_available_models() == [
         {
             "name": "gpt-chat",
+            "display_name": "GPT Chat",
             "upstream": "github_copilot/gpt-chat",
             "max_tokens": 400000,
             "max_input_tokens": 272000,
             "max_output_tokens": 128000,
             "capabilities": {
+                "supports": {"vision": True, "reasoning_effort": ["low", "medium"]},
                 "limits": {
                     "max_context_window_tokens": 400000,
                     "max_prompt_tokens": 272000,

@@ -21,6 +21,17 @@ vl
 
 In the workspace, run `/login`, then `/start`. Use `/api` to view connection settings and `/models` to select the default model and configure its context.
 
+Use `/clients` for one-click client configuration:
+
+- **DSH** (DeepSeek Harness)
+- **Codex**
+- **Kimi Code 2**, with legacy kimi-cli support
+
+Configure refreshes model capabilities before saving; context changes synchronize
+configured clients. Connection status is separate from saved configuration, with
+an optional **Test request** action that uses model quota.
+[Client configuration details](docs/client-configuration.md).
+
 You can also run commands directly:
 
 ```bash

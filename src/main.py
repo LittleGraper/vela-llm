@@ -17,6 +17,7 @@ from anthropic_transform import (
 )
 from auth import require_api_key
 from proxy_errors import anthropic_error_response, openai_error_response
+from request_compatibility import normalize_request
 from serialization import as_dict
 from settings import get_settings
 
@@ -73,13 +74,16 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     settings = get_settings()
     try:
         body["model"] = settings.upstream_model(body.get("model"))
+        headers = normalize_request(body, settings.model_registry(), "/chat/completions")
         litellm = _litellm()
         if body.get("stream"):
             stream = await litellm.acompletion(**body)
-            return StreamingResponse(_openai_sse(stream), media_type="text/event-stream")
+            return StreamingResponse(
+                _openai_sse(stream), media_type="text/event-stream", headers=headers
+            )
 
         response = await litellm.acompletion(**body)
-        return JSONResponse(as_dict(response))
+        return JSONResponse(as_dict(response), headers=headers)
     except Exception as exc:
         return openai_error_response(exc)
 
@@ -93,16 +97,18 @@ async def anthropic_messages(request: Request) -> JSONResponse | StreamingRespon
     kwargs = to_litellm_completion_kwargs(body, requested_model)
     try:
         kwargs["model"] = settings.upstream_model(body.get("model"))
+        headers = normalize_request(kwargs, settings.model_registry(), "/chat/completions")
         litellm = _litellm()
         if kwargs.get("stream"):
             stream = await litellm.acompletion(**kwargs)
             return StreamingResponse(
                 litellm_stream_to_anthropic_events(stream, requested_model),
                 media_type="text/event-stream",
+                headers=headers,
             )
 
         response = await litellm.acompletion(**kwargs)
-        return JSONResponse(to_anthropic_message(response, requested_model))
+        return JSONResponse(to_anthropic_message(response, requested_model), headers=headers)
     except Exception as exc:
         return anthropic_error_response(exc)
 
@@ -124,29 +130,41 @@ async def embeddings(request: Request) -> JSONResponse:
 async def responses(request: Request) -> JSONResponse | StreamingResponse:
     body = await request.json()
     try:
-        body["model"] = get_settings().upstream_model(body.get("model"))
+        settings = get_settings()
+        body["model"] = settings.upstream_model(body.get("model"))
+        headers = normalize_request(body, settings.model_registry(), "/responses")
         litellm = _litellm()
         if body.get("stream"):
             stream = await litellm.aresponses(**body)
-            return StreamingResponse(_openai_response_sse(stream), media_type="text/event-stream")
+            return StreamingResponse(
+                _openai_response_sse(stream), media_type="text/event-stream", headers=headers
+            )
 
         response = await litellm.aresponses(**body)
-        return JSONResponse(as_dict(response))
+        return JSONResponse(as_dict(response), headers=headers)
     except Exception as exc:
         return openai_error_response(exc)
 
 
 async def _openai_sse(stream: AsyncIterator[Any]) -> AsyncIterator[str]:
-    async for chunk in stream:
-        yield f"data: {json.dumps(as_dict(chunk), separators=(',', ':'))}\n\n"
+    try:
+        async for chunk in stream:
+            yield f"data: {json.dumps(as_dict(chunk), separators=(',', ':'))}\n\n"
+    except Exception as exc:
+        yield f"data: {openai_error_response(exc).body.decode()}\n\n"
+        return
     yield "data: [DONE]\n\n"
 
 
 async def _openai_response_sse(stream: AsyncIterator[Any]) -> AsyncIterator[str]:
-    async for event in stream:
-        event_dict = as_dict(event)
-        event_name = event_dict.get("type", "message")
-        yield f"event: {event_name}\ndata: {json.dumps(event_dict, separators=(',', ':'))}\n\n"
+    try:
+        async for event in stream:
+            event_dict = as_dict(event)
+            event_name = event_dict.get("type", "message")
+            yield f"event: {event_name}\ndata: {json.dumps(event_dict, separators=(',', ':'))}\n\n"
+    except Exception as exc:
+        error = json.loads(openai_error_response(exc).body)["error"]
+        yield f"event: error\ndata: {json.dumps({**error, 'type': 'error'})}\n\n"
 
 
 def _litellm() -> Any:

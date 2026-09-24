@@ -59,6 +59,9 @@ def fetch_available_models() -> list[dict[str, Any]]:
             "name": model_id,
             "upstream": f"github_copilot/{model_id}",
         }
+        display_name = model.get("name")
+        if isinstance(display_name, str) and display_name.strip():
+            entry["display_name"] = display_name.strip()
         limits = _model_limits(model)
         if limits:
             entry.update(limits)

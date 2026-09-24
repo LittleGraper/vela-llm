@@ -21,6 +21,16 @@ vl
 
 进入工作台后，依次执行 `/login` 登录、`/start` 启动代理。通过 `/api` 查看连接信息，`/models` 选择默认模型和配置上下文。
 
+通过 `/clients` 一键配置以下客户端：
+
+- **DSH**（DeepSeek Harness）
+- **Codex**
+- **Kimi Code 2**，同时兼容旧版 kimi-cli
+
+配置前会刷新模型能力，修改上下文后会同步已配置的客户端。连接状态与配置保存状态分开显示；
+可通过 **Test request** 发起真实文本请求检查（会消耗模型额度）。
+[客户端配置说明](docs/client-configuration.md)。
+
 也可以直接使用命令：
 
 ```bash

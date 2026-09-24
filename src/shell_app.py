@@ -25,6 +25,8 @@ from textual.widgets import DataTable, Input, OptionList, Static
 
 from api_screen import ApiScreen
 from banner import render_startup_banner
+from client_config import ClientManager
+from client_screens import ClientsScreen
 from model_app import ModelApp
 from process_lifetime import WORKSPACE_JOB_ENV, WorkspaceJobs, command_python
 from workspace_output import CommandOutput
@@ -36,6 +38,7 @@ COMMANDS = {
     "stop": "Stop the proxy",
     "api": "API addresses and masked key",
     "test": "Test model connectivity",
+    "clients": "Harness configuration",
     "login": "Sign in with GitHub",
     "whoami": "Current GitHub account",
     "logout": "Remove saved credentials",
@@ -45,7 +48,7 @@ COMMANDS = {
 
 COMMAND_GROUPS = (
     ("Proxy", ("start", "stop", "api")),
-    ("Models", ("models", "test")),
+    ("Models", ("models", "test", "clients")),
     ("Account", ("login", "whoami", "logout")),
     ("VELA", ("update", "about")),
 )
@@ -171,6 +174,8 @@ class CommandBar(Vertical):
         focused = self.screen.focused
         if isinstance(focused, Input):
             hint = "↑↓ Select · Tab Complete · Enter Run" if self.matches else "Enter Run"
+        elif hasattr(self.screen, "command_hint"):
+            hint = self.screen.command_hint
         elif isinstance(self.screen, ApiScreen):
             hint = "K Hide key" if self.screen.key_visible else "K Show key"
             if isinstance(focused, VerticalScroll):
@@ -472,6 +477,23 @@ class ShellApp(ModelApp, inherit_bindings=False):
             return
         args[0] = args[0].removeprefix("/")
         name = args[0]
+        if name == "clients":
+            from config_files import env_file_for_settings
+            from settings import Settings
+
+            if len(args) != 1:
+                self.notify("Use /clients without arguments.", severity="warning")
+                return
+            self.show_result_page()
+            self.push_screen(
+                ClientsScreen(
+                    ClientManager(
+                        self.manager.settings,
+                        settings_loader=lambda: Settings(_env_file=env_file_for_settings()),
+                    )
+                )
+            )
+            return
         if name == "about":
             if len(args) != 1:
                 self.notify("/about takes no arguments.", severity="warning")
